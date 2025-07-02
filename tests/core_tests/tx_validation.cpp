@@ -2728,3 +2728,94 @@ bool tx_pool_validation_and_chain_switch::c1(currency::core& c, size_t ev_index,
   return true;
 }
 
+
+tx_coinbase_separate_sig_flag::tx_coinbase_separate_sig_flag()
+{
+  REGISTER_CALLBACK_METHOD(tx_coinbase_separate_sig_flag, c1);
+}
+
+bool tx_coinbase_separate_sig_flag::configure_core(currency::core& c, size_t ev_index, const std::vector<test_event_entry>& events)
+{
+  currency::core_runtime_config pc = c.get_blockchain_storage().get_core_runtime_config();
+  pc.min_coinstake_age = TESTS_POS_CONFIG_MIN_COINSTAKE_AGE;
+  pc.pos_minimum_heigh = TESTS_POS_CONFIG_POS_MINIMUM_HEIGH;
+  pc.hf4_minimum_mixins = 0;
+  pc.hard_forks = m_hardforks;
+  c.get_blockchain_storage().set_core_runtime_config(pc);
+  return true;
+}
+
+bool tx_coinbase_separate_sig_flag::generate(std::vector<test_event_entry>& events) const
+{
+  uint64_t ts = test_core_time::get_time();
+  GENERATE_ACCOUNT(miner);
+  GENERATE_ACCOUNT(alice);
+
+  MAKE_GENESIS_BLOCK(events, blk_0, miner, ts);
+  DO_CALLBACK(events, "configure_core");
+
+  std::list<currency::account_base> miner_stake_sources( {miner} );
+  REWIND_BLOCKS_N_WITH_TIME(events, blk_0r, blk_0, miner, CURRENCY_MINED_MONEY_UNLOCK_WINDOW * 2);
+
+  MAKE_TX(events, tx_0, miner, alice, MK_TEST_COINS(100), blk_0r);
+  MAKE_NEXT_BLOCK_TX1(events, blk_01, blk_0r, miner, tx_0);
+
+  // MAKE_TX_FEE(events, tx_with_flag, miner, alice, MK_TEST_COINS(3), MK_TEST_COINS(1), blk_0r);
+  // currency::set_tx_flags(tx_with_flag, get_tx_flags(tx_with_flag) | TX_FLAG_SIGNATURE_MODE_SEPARATE);
+  // MAKE_NEXT_POS_BLOCK_TX1(events, blk_pos_bad, blk_0r, miner, std::list<account_base>{miner}, tx_with_flag);
+  // DO_CALLBACK(events, "mark_invalid_block"); // если ожидаем, что блок будет отклонён
+
+  // std::vector<extra_v> extra;
+  // etc_tx_details_flags et{};
+  // et.v = TX_FLAG_SIGNATURE_MODE_SEPARATE;
+  // extra.push_back(et);
+
+  currency::transaction tx_with_flag;
+  std::vector<currency::extra_v> extras;
+  currency::etc_tx_details_flags det;
+  det.v = TX_FLAG_SIGNATURE_MODE_SEPARATE;
+  extras.push_back(det);
+
+  bool txr = construct_tx_to_key(generator.get_hardforks(), events, tx_with_flag, blk_0r, miner, alice, MK_TEST_COINS(1), 
+    TESTS_DEFAULT_FEE, 0, generator.last_tx_generated_secret_key, CURRENCY_TO_KEY_OUT_RELAXED, extras, std::vector<currency::attachment_v>(), true);
+
+  CHECK_AND_ASSERT_THROW_MES(txr, "failed to construct transaction");
+  if (get_tx_flags(tx_with_flag) & TX_FLAG_SIGNATURE_MODE_SEPARATE)
+    std::cout << "2TX_FLAG_SIGNATURE_MODE_SEPARATE is set\n";
+  else
+    std::cout << "2TX_FLAG_SIGNATURE_MODE_SEPARATE is NOT set\n";
+
+  // MAKE_TX(events, tx_with_flag, miner, alice, MK_TEST_COINS(1), blk_0r);
+  // currency::set_tx_flags(tx_with_flag, get_tx_flags(tx_with_flag) | TX_FLAG_SIGNATURE_MODE_SEPARATE);
+  MAKE_NEXT_POS_BLOCK_TX1(events, blk_1_bad, blk_01, miner, std::list<account_base>{miner}, tx_with_flag);
+  DO_CALLBACK(events, "mark_invalid_block");
+
+  MAKE_TX(events, tx_default, miner, alice, MK_TEST_COINS(1), blk_0r);
+  MAKE_NEXT_POS_BLOCK_TX1(events, blk_1_good, blk_01, miner, std::list<account_base>{miner}, tx_default);
+
+  block blk_2;
+  auto coinbase_default_cb = [](transaction& miner_tx, const keypair&) -> bool { return true; };
+  auto coinbase_separate_cb = [](transaction& miner_tx, const keypair&) -> bool {
+    set_tx_flags(miner_tx, get_tx_flags(miner_tx) | TX_FLAG_SIGNATURE_MODE_SEPARATE);
+    return true;
+  };
+
+  bool with_separate_flag = generator.construct_block_gentime_with_coinbase_cb(blk_1_good, miner, coinbase_separate_cb, blk_2);
+  CHECK_AND_ASSERT_MES(with_separate_flag, false, "expected failure because TX_FLAG_SIGNATURE_MODE_SEPARATE is forbidden for coinbase after HF4");
+
+  bool default_tx = generator.construct_block_gentime_with_coinbase_cb(blk_1_good, miner, coinbase_default_cb, blk_2);
+  CHECK_AND_ASSERT_MES(default_tx, true, "default coinbase must succeed");
+
+  events.push_back(blk_2);
+
+  DO_CALLBACK(events, "c1");
+
+
+
+  return true;
+}
+
+bool tx_coinbase_separate_sig_flag::c1(currency::core& c, size_t ev_index, const std::vector<test_event_entry>& events)
+{
+  return true;
+}
