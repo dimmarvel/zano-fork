@@ -63,7 +63,8 @@ struct pos_block_builder
     const currency::account_public_address &reward_and_stake_receiver_address,
     const currency::blobdata& extra_nonce = currency::blobdata(),
     size_t max_outs = CURRENCY_MINER_TX_MAX_OUTS,
-    const currency::keypair* tx_one_time_key_to_use = nullptr
+    const currency::keypair* tx_one_time_key_to_use = nullptr,
+    uint64_t flags = 0
   );
 
   void step5_sign(const currency::tx_source_entry& se, const currency::account_keys& stakeholder_keys);

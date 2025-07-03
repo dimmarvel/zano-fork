@@ -145,9 +145,10 @@ void pos_block_builder::step4_generate_coinbase_tx(size_t median_size,
   const account_public_address &reward_and_stake_receiver_address,
   const blobdata& extra_nonce,
   size_t max_outs,
-  const keypair* tx_one_time_key_to_use)
+  const keypair* tx_one_time_key_to_use,
+  uint64_t flags)
 {
-  step4_generate_coinbase_tx(median_size, already_generated_coins, reward_and_stake_receiver_address, reward_and_stake_receiver_address, extra_nonce, max_outs, tx_one_time_key_to_use);
+  step4_generate_coinbase_tx(median_size, already_generated_coins, reward_and_stake_receiver_address, reward_and_stake_receiver_address, extra_nonce, max_outs, tx_one_time_key_to_use, flags);
 }
 
 
@@ -175,6 +176,7 @@ void pos_block_builder::step4_generate_coinbase_tx(size_t median_size,
     reward_receiver_address, stakeholder_address, m_block.miner_tx, block_reward_without_fee, m_block_reward, m_miner_tx_version, m_miner_tx_hardfork_id,
     extra_nonce, max_outs, true, pe, &m_miner_tx_tgc, tx_one_time_key_to_use);
   CHECK_AND_ASSERT_THROW_MES(r, "construct_miner_tx failed");
+
   if(flags != 0)
     set_tx_flags(m_block.miner_tx, get_tx_flags(m_block.miner_tx) | flags);
 
