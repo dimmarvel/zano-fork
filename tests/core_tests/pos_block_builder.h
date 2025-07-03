@@ -54,7 +54,8 @@ struct pos_block_builder
     const currency::account_public_address &stakeholder_address,
     const currency::blobdata& extra_nonce = currency::blobdata(),
     size_t max_outs = CURRENCY_MINER_TX_MAX_OUTS,
-    const currency::keypair* tx_one_time_key_to_use = nullptr
+    const currency::keypair* tx_one_time_key_to_use = nullptr,
+    uint64_t flags = 0
   );
 
   void step4_generate_coinbase_tx(size_t median_size,

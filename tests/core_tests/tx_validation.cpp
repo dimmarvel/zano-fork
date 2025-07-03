@@ -10,6 +10,7 @@
 #include "tx_builder.h"
 #include "chaingen_helpers.h"
 #include "../../src/currency_core/tx_semantic_validation.h"
+#include "pos_block_builder.h"
 
 using namespace epee;
 using namespace crypto;
@@ -2753,12 +2754,11 @@ bool tx_coinbase_separate_sig_flag::generate(std::vector<test_event_entry>& even
 
   MAKE_GENESIS_BLOCK(events, blk_0, miner, ts);
   DO_CALLBACK(events, "configure_core");
+  MAKE_NEXT_BLOCK(events, blk_01, blk_0, miner);
+  MAKE_NEXT_BLOCK(events, blk_02, blk_01, miner);
 
   std::list<currency::account_base> miner_stake_sources( {miner} );
-  REWIND_BLOCKS_N_WITH_TIME(events, blk_0r, blk_0, miner, CURRENCY_MINED_MONEY_UNLOCK_WINDOW * 2);
-
-  MAKE_TX(events, tx_0, miner, alice, MK_TEST_COINS(100), blk_0r);
-  MAKE_NEXT_BLOCK_TX1(events, blk_01, blk_0r, miner, tx_0);
+  REWIND_BLOCKS_N_WITH_TIME(events, blk_0r, blk_02, miner, CURRENCY_MINED_MONEY_UNLOCK_WINDOW * 2);
 
   // MAKE_TX_FEE(events, tx_with_flag, miner, alice, MK_TEST_COINS(3), MK_TEST_COINS(1), blk_0r);
   // currency::set_tx_flags(tx_with_flag, get_tx_flags(tx_with_flag) | TX_FLAG_SIGNATURE_MODE_SEPARATE);
@@ -2770,40 +2770,94 @@ bool tx_coinbase_separate_sig_flag::generate(std::vector<test_event_entry>& even
   // et.v = TX_FLAG_SIGNATURE_MODE_SEPARATE;
   // extra.push_back(et);
 
-  currency::transaction tx_with_flag;
-  std::vector<currency::extra_v> extras;
-  currency::etc_tx_details_flags det;
-  det.v = TX_FLAG_SIGNATURE_MODE_SEPARATE;
-  extras.push_back(det);
+  //----------------------------------------------------------
+  // setup params for PoS
+  const currency::transaction& stake_tx = blk_02.miner_tx;
+  currency::block new_pos_block;
+  // get params for PoS
+  crypto::hash prev_id = get_block_hash(blk_0r);
+  wide_difficulty_type pos_diff{};
+  crypto::hash last_pow_block_hash{}, last_pos_block_kernel_hash{};
+  bool r = generator.get_params_for_next_pos_block(
+    prev_id, pos_diff, last_pow_block_hash, last_pos_block_kernel_hash
+  );
+  CHECK_AND_ASSERT_MES(r, false, "get_params_for_next_pos_block failed");
 
-  bool txr = construct_tx_to_key(generator.get_hardforks(), events, tx_with_flag, blk_0r, miner, alice, MK_TEST_COINS(1), 
-    TESTS_DEFAULT_FEE, 0, generator.last_tx_generated_secret_key, CURRENCY_TO_KEY_OUT_RELAXED, extras, std::vector<currency::attachment_v>(), true);
+  // tx key and key image for stake out
+  crypto::public_key stake_pk = get_tx_pub_key_from_extra(stake_tx);
+  keypair kp;
+  crypto::key_image ki;
+  size_t stake_output_idx = 0;
+  generate_key_image_helper(miner.get_keys(), stake_pk, stake_output_idx, kp, ki);
 
-  CHECK_AND_ASSERT_THROW_MES(txr, "failed to construct transaction");
-  if (get_tx_flags(tx_with_flag) & TX_FLAG_SIGNATURE_MODE_SEPARATE)
-    std::cout << "2TX_FLAG_SIGNATURE_MODE_SEPARATE is set\n";
-  else
-    std::cout << "2TX_FLAG_SIGNATURE_MODE_SEPARATE is NOT set\n";
+  // glob index for stake out
+  uint64_t stake_output_gidx = UINT64_MAX;
+  r = find_global_index_for_output(events, prev_id, stake_tx, stake_output_idx, stake_output_gidx);
+  CHECK_AND_ASSERT_MES(r, false, "find_global_index_for_output failed");
 
-  // MAKE_TX(events, tx_with_flag, miner, alice, MK_TEST_COINS(1), blk_0r);
-  // currency::set_tx_flags(tx_with_flag, get_tx_flags(tx_with_flag) | TX_FLAG_SIGNATURE_MODE_SEPARATE);
-  MAKE_NEXT_POS_BLOCK_TX1(events, blk_1_bad, blk_01, miner, std::list<account_base>{miner}, tx_with_flag);
-  DO_CALLBACK(events, "mark_invalid_block");
+  pos_block_builder pb;
+  uint64_t height = get_block_height(blk_0r) + 1;
+  pb.step1_init_header(generator.get_hardforks(), height, prev_id);
+  pb.step2_set_txs({});
 
-  MAKE_TX(events, tx_default, miner, alice, MK_TEST_COINS(1), blk_0r);
-  MAKE_NEXT_POS_BLOCK_TX1(events, blk_1_good, blk_01, miner, std::list<account_base>{miner}, tx_default);
+  // for hf4+
+  std::vector<tx_source_entry> sources;
+  bool ok = fill_tx_sources(
+    sources, events, blk_0r, miner.get_keys(),
+    UINT64_MAX, 0, false, false, true
+  );
 
+  auto it = std::find_if(sources.begin(), sources.end(),
+    [&](const tx_source_entry &e){
+      return e.real_out_tx_key == stake_pk
+          && e.real_output_in_tx_index == stake_output_idx;
+    });
+  CHECK_AND_ASSERT_MES(it != sources.end(), false, "source entry not found");
+  const tx_source_entry& se = *it;
+
+  pb.step3a(pos_diff, last_pow_block_hash, last_pos_block_kernel_hash);
+  pb.step3b(
+    se.amount, ki,
+    se.real_out_tx_key, se.real_output_in_tx_index,
+    se.real_out_amount_blinding_mask,
+    miner.get_keys().view_secret_key,
+    stake_output_gidx,
+    blk_0r.timestamp,
+    POS_SCAN_WINDOW, POS_SCAN_STEP
+  );
+
+  // insert extra_nonce
+  pb.step4_generate_coinbase_tx(
+    generator.get_timestamps_median(prev_id),
+    generator.get_already_generated_coins(blk_0r),
+    alice.get_public_address(),
+    currency::blobdata(),
+    CURRENCY_MINER_TX_MAX_OUTS,
+    nullptr, // tx_one_time_key_to_use
+    TX_FLAG_SIGNATURE_MODE_SEPARATE
+  );
+
+  pb.step5_sign(se, miner.get_keys());
+  new_pos_block = pb.m_block;
+  LOG_PRINT_L0("events.size() = " << events.size());
+  events.push_back(new_pos_block);
+  CHECK_AND_ASSERT_MES(generator.add_block_info(new_pos_block, std::list<transaction>()), false, "add_block_info failed");
+  //----------------------------------------------------------
+  LOG_PRINT_L0("new_pos_block hash: " << get_block_hash(new_pos_block));
+  LOG_PRINT_L0("events.size() = " << events.size());
+
+
+  MAKE_NEXT_BLOCK(events, blk_03, new_pos_block, miner);
   block blk_2;
   auto coinbase_default_cb = [](transaction& miner_tx, const keypair&) -> bool { return true; };
   auto coinbase_separate_cb = [](transaction& miner_tx, const keypair&) -> bool {
     set_tx_flags(miner_tx, get_tx_flags(miner_tx) | TX_FLAG_SIGNATURE_MODE_SEPARATE);
     return true;
   };
-
-  bool with_separate_flag = generator.construct_block_gentime_with_coinbase_cb(blk_1_good, miner, coinbase_separate_cb, blk_2);
+  bool with_separate_flag = generator.construct_block_gentime_with_coinbase_cb(blk_03, miner, coinbase_separate_cb, blk_2);
   CHECK_AND_ASSERT_MES(with_separate_flag, false, "expected failure because TX_FLAG_SIGNATURE_MODE_SEPARATE is forbidden for coinbase after HF4");
 
-  bool default_tx = generator.construct_block_gentime_with_coinbase_cb(blk_1_good, miner, coinbase_default_cb, blk_2);
+  bool default_tx = generator.construct_block_gentime_with_coinbase_cb(blk_03, miner, coinbase_default_cb, blk_2);
   CHECK_AND_ASSERT_MES(default_tx, true, "default coinbase must succeed");
 
   events.push_back(blk_2);
