@@ -2827,3 +2827,71 @@ bool tx_input_mixins::generate(std::vector<test_event_entry>& events) const
 
   return true;
 }
+
+tx_input_huge_ring_size::tx_input_huge_ring_size()
+{
+  REGISTER_CALLBACK_METHOD(tx_input_huge_ring_size, configure_core);
+}
+
+bool tx_input_huge_ring_size::configure_core(currency::core& c, size_t ev_index, const std::vector<test_event_entry>& events)
+{
+  currency::core_runtime_config pc = c.get_blockchain_storage().get_core_runtime_config();
+  pc.min_coinstake_age = TESTS_POS_CONFIG_MIN_COINSTAKE_AGE;
+  pc.pos_minimum_heigh = TESTS_POS_CONFIG_POS_MINIMUM_HEIGH;
+  pc.hf4_minimum_mixins = 5;
+  pc.hard_forks.set_hardfork_height(1, 0);
+  pc.hard_forks.set_hardfork_height(2, 1);
+  pc.hard_forks.set_hardfork_height(3, 1);
+  pc.hard_forks.set_hardfork_height(4, 5);
+  c.get_blockchain_storage().set_core_runtime_config(pc);
+  return true;
+}
+
+bool tx_input_huge_ring_size::generate(std::vector<test_event_entry>& events) const
+{
+  uint64_t ts = test_core_time::get_time();
+
+  GENERATE_ACCOUNT(miner_acc);
+  GENERATE_ACCOUNT(alice_acc);
+  m_hardforks.set_hardfork_height(1, 0);
+  m_hardforks.set_hardfork_height(2, 1);
+  m_hardforks.set_hardfork_height(3, 1);
+  m_hardforks.set_hardfork_height(4, 5);
+
+  MAKE_GENESIS_BLOCK(events, blk_0, miner_acc, ts);
+  DO_CALLBACK(events, "configure_core");
+  REWIND_BLOCKS_N(events, blk_0r, blk_0, miner_acc, CURRENCY_MINED_MONEY_UNLOCK_WINDOW * 3);
+  REWIND_BLOCKS_N(events, blk_1r, blk_0r, alice_acc, CURRENCY_MINED_MONEY_UNLOCK_WINDOW * 100);
+
+  transaction tx_1;
+  bool r = construct_tx_with_many_outputs(m_hardforks, events, blk_1r, miner_acc.get_keys(), alice_acc.get_public_address(), MK_TEST_COINS(1), 31, TESTS_DEFAULT_FEE, tx_1);
+  CHECK_AND_ASSERT_MES(r, false, "construct_tx_with_many_outputs failed");
+  events.push_back(tx_1);
+  MAKE_NEXT_BLOCK_TX1(events, blk_1, blk_1r, miner_acc, tx_1);
+
+  REWIND_BLOCKS_N(events, blk_2r, blk_1, miner_acc, CURRENCY_MINED_MONEY_UNLOCK_WINDOW);
+  static const size_t HUGE_RING_SIZE = 1000;
+
+  std::vector<tx_source_entry> sources;
+  std::vector<tx_destination_entry> destinations;
+  r = fill_tx_sources_and_destinations(events, blk_2r, alice_acc, miner_acc, MK_TEST_COINS(1), TESTS_DEFAULT_FEE, HUGE_RING_SIZE, sources, destinations);
+  CHECK_AND_ASSERT_MES(r, false, "fill_tx_sources_and_destinations failed");
+
+  currency::transaction tx_b{};
+  auto start = std::chrono::high_resolution_clock::now();
+  r = construct_tx(alice_acc.get_keys(), sources, destinations, events, this, tx_b);
+  auto end = std::chrono::high_resolution_clock::now();
+  auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+  LOG_PRINT_GREEN("---------> construct_tx duration: " << duration_ms << " ms", LOG_LEVEL_0);
+  CHECK_AND_ASSERT_MES(r, false, "construct_tx failed");
+
+  if (!tx_b.vin.empty() && tx_b.vin.front().type() == typeid(currency::txin_zc_input)) {
+      const currency::txin_zc_input& zc_in = boost::get<currency::txin_zc_input>(tx_b.vin.front());
+      LOG_PRINT_GREEN("tx_b.vin[0].key_offsets.size() = " << zc_in.key_offsets.size(), LOG_LEVEL_0);
+  }
+
+  events.push_back(tx_b);
+  MAKE_NEXT_BLOCK_TX1(events, blk_3, blk_2r, alice_acc, tx_b);
+
+  return true;
+}
