@@ -116,6 +116,15 @@ namespace tools
       PROFILE_FUNC("lmdb_db_backend::begin_transaction");
       {
         std::lock_guard<boost::recursive_mutex> lock(m_cs);
+          size_t total_entries = 0;
+          for (auto &pr : m_txs) total_entries += pr.second.size();
+          LOG_PRINT_L1(
+            "[DB] begin_transaction(" << (read_only ? "RO" : "RW") << ") by thread "
+            << std::this_thread::get_id()
+            << ", threads with tx: " << m_txs.size()
+            << ", total open entries: " << total_entries
+          );
+
         CHECK_AND_ASSERT_THROW_MES(m_penv, "m_penv==null, db closed");
         transactions_list& rtxlist = m_txs[std::this_thread::get_id()];
         MDB_txn* pparent_tx = nullptr;
@@ -148,6 +157,12 @@ namespace tools
           res = mdb_txn_begin(m_penv, pparent_tx, flags, &p_new_tx);
           if(res != MDB_SUCCESS)
           {
+            LOG_PRINT_L1(
+              "[DB ERROR] mdb_txn_begin failed " << res << " (" << mdb_strerror(res) << "), RO=" 
+              << (read_only?"true":"false")
+              << ", threads with tx: " << m_txs.size()
+            );
+
             //Important: if mdb_txn_begin is failed need to unlock previously locked mutex
             CRITICAL_SECTION_UNLOCK(m_write_exclusive_lock);
             //throw exception to avoid regular code execution 
@@ -207,6 +222,13 @@ namespace tools
       {
         tx_entry txe = AUTO_VAL_INIT(txe);
         bool r = pop_tx_entry(txe);
+        LOG_PRINT_L1(
+          "[DB] commit_transaction by thread " << std::this_thread::get_id()
+          << ", read_only=" << (txe.read_only ? "true":"false")
+          << ", count(after pop)=" << txe.count
+          << ", remaining threads with tx=" << m_txs.size()
+        );
+
         CHECK_AND_ASSERT_MES(r, false, "Unable to pop_tx_entry");
           
         if (txe.count == 0 || (txe.read_only && txe.count == 1))
@@ -230,6 +252,13 @@ namespace tools
       {
         tx_entry txe = AUTO_VAL_INIT(txe);
         bool r = pop_tx_entry(txe);
+        LOG_PRINT_L1(
+          "[DB] abort_transaction by thread " << std::this_thread::get_id()
+          << ", read_only=" << (txe.read_only ? "true":"false")
+          << ", count(after pop)=" << txe.count
+          << ", remaining threads with tx=" << m_txs.size()
+        );
+
         CHECK_AND_ASSERT_MES(r, void(), "Unable to pop_tx_entry");
         if (txe.count == 0 || (txe.read_only && txe.count == 1))
         {
