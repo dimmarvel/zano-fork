@@ -1667,6 +1667,7 @@ bool simple_wallet::transfer(const std::vector<std::string> &args_)
     fail_msg_writer() << "mixin_count should be non-negative integer, got " << local_args[0];
     return true;
   }
+  std::cout << "mixin_count: " << fake_outs_count << std::endl;
   local_args.erase(local_args.begin());
 
   

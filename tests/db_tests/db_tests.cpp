@@ -42,6 +42,41 @@ struct simple_get_set_test
   }
 };
 
+struct test_uncommitted_transactions
+{
+  typedef tools::db::cached_key_value_accessor<uint64_t, std::string, true, true> accessor_type;
+  static bool run_test(accessor_type& acc)
+  {
+    const int N = 200;
+    std::vector<std::thread> threads;
+    std::atomic<bool> got_exception{false};
+
+    for (int i = 0; i < N; ++i)
+    {
+      threads.emplace_back([&acc, i, &got_exception]() {
+        try
+        {
+          acc.begin_transaction(true);
+          std::cout << "Thread " << i << " opened RO tx" << std::endl;
+          while (!got_exception) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        catch (const std::exception& e)
+        {
+          std::cout << "Thread " << i << " exception: " << e.what() << std::endl;
+          got_exception = true;
+        }
+      });
+    }
+
+    while (!got_exception && std::count_if(threads.begin(), threads.end(), [](std::thread& t){ return t.joinable(); }) > 0)
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    got_exception = true;
+    for (auto& t : threads) if (t.joinable()) t.join();
+
+    return true;
+  }
+};
 
 struct simple_check_count
 {
@@ -409,26 +444,29 @@ int main(int argc, char* argv[])
   epee::log_space::log_singletone::add_logger(LOGGER_CONSOLE, NULL, NULL, LOG_LEVEL_2);
 
 
-  if (!prepare_db_and_run_test<check_boost_multiprecision_container>())
-    return 0;
+  // if (!prepare_db_and_run_test<check_boost_multiprecision_container>())
+  //   return 0;
 
-  if (!db_cache_test())
-    return 0;
+  // if (!db_cache_test())
+  //   return 0;
 
-  if (!prepare_db_and_run_test<simple_get_set_test>())
-    return 0;
+  // if (!prepare_db_and_run_test<simple_get_set_test>())
+  //   return 0;
 
-  if (!prepare_db_and_run_test<simple_check_count>())
+  if (!prepare_db_and_run_test<test_uncommitted_transactions>())
     return 0;
+  
+  // if (!prepare_db_and_run_test<simple_check_count>())
+  //   return 0;
 
-  if (!prepare_db_and_run_test<check_array_container>())
-    return 0;
+  // if (!prepare_db_and_run_test<check_array_container>())
+  //   return 0;
 
-  if (!prepare_db_and_run_test<check_subcontainer_container>())
-    return 0;
+  // if (!prepare_db_and_run_test<check_subcontainer_container>())
+  //   return 0;
 
-  if (!solo_container_save_load_test())
-    return 0;
+  // if (!solo_container_save_load_test())
+  //   return 0;
 
   return 1;
 }

@@ -2347,6 +2347,7 @@ bool wallet2::get_bare_unspent_outputs_stats(std::vector<batch_of_bare_unspent_o
     if (usable_zc_outs_tids_precalculated)
       return;
     size_t decoys = is_auditable() ? 0 : m_core_runtime_config.hf4_minimum_mixins;
+    std::cout << "-->> decoys = is_auditable() : " << decoys << std::endl;
     for (const auto& tr : m_transfers)
     {
       uint64_t tid = tr.first;
@@ -5003,6 +5004,7 @@ bool wallet2::prepare_and_sign_pos_block(const mining_context& cxt, uint64_t ful
 
   // get decoys outputs and construct miner tx
   const size_t required_decoys_count = m_core_runtime_config.hf4_minimum_mixins == 0 ? 4 /* <-- for tests */ : m_core_runtime_config.hf4_minimum_mixins;
+  std::cout << "-->> required_decoys_count: " << required_decoys_count << std::endl;
   static bool use_only_forced_to_mix = false;       // TODO @#@# set them somewhere else
   if (required_decoys_count > 0 && !is_auditable())
   {
@@ -5957,6 +5959,7 @@ void wallet2::dump_transfers(std::stringstream& ss, bool verbose, const crypto::
         get_transaction_hash(td.m_ptx_wallet_info->m_tx) << "  " <<
         std::setw(4) << td.m_internal_output_index << "  " <<
         (asset_id == native_coin_asset_id ? std::string() : crypto::pod_to_hex(asset_id)) << ENDL;
+      std::cout << td.m_ptx_wallet_info->m_tx.vin.size() << " !!!!!!!!!!!!!!! inputs, " << td.m_ptx_wallet_info->m_tx.vout.size() << " outputs" << ENDL;
     }
   }
 }
@@ -6744,6 +6747,7 @@ bool wallet2::prepare_tx_sources_for_defragmentation_tx(std::vector<currency::tx
       continue;
 
     uint64_t fake_outs_count_for_td = m_decoys_count_for_defragmentation_tx == SIZE_MAX ? (td.is_zc() ? m_core_runtime_config.hf4_minimum_mixins : CURRENCY_DEFAULT_DECOY_SET_SIZE) : m_decoys_count_for_defragmentation_tx;
+    std::cout << "-->> d fake_outs_count_for_td : " << fake_outs_count_for_td << std::endl;
     if (is_transfer_ready_to_go(td, fake_outs_count_for_td))
     {
       found_money += td.m_amount;
@@ -6770,6 +6774,7 @@ bool wallet2::prepare_tx_sources(assets_selection_context& needed_money_map, siz
 {
   try
   {
+    std::cout << "--- prepare_tx_sources: fake_outputs_count: " << fake_outputs_count << ", dust_threshold: " << dust_threshold << std::endl;
     select_transfers(needed_money_map, fake_outputs_count, dust_threshold, selected_indicies); // always returns true, TODO consider refactoring -- sowle
     return prepare_tx_sources(fake_outputs_count, sources, selected_indicies);
   }
@@ -6833,6 +6838,7 @@ bool wallet2::prepare_tx_sources(size_t fake_outputs_count_, bool use_all_decoys
     req.height_upper_limit = m_last_pow_block_h;  // request decoys to be either older than, or the same age as stake output's height
     req.use_forced_mix_outs = false; // TODO: add this feature to UI later
     //req.decoys_count = fake_outputs_count + 1;    // one more to be able to skip a decoy in case it hits the real output
+    std::cout << "---1---> selected_indicies: " << selected_indicies << std::endl;
     for (uint64_t i : selected_indicies)
     {
       req.amounts.push_back(COMMAND_RPC_GET_RANDOM_OUTPUTS_FOR_AMOUNTS3::offsets_distribution());
@@ -6913,7 +6919,16 @@ bool wallet2::prepare_tx_sources(size_t fake_outputs_count_, bool use_all_decoys
 
   //prepare inputs
   size_t i = 0;
-  for (uint64_t J : selected_indicies)
+  constexpr size_t N = 999; // <-- нужное количество входов
+  constexpr size_t MIN_INPUTS = 70;
+  std::vector<uint64_t> limited_selected_indicies = selected_indicies;
+  if (limited_selected_indicies.size() > N)
+    limited_selected_indicies.resize(N);
+  if (limited_selected_indicies.size() < MIN_INPUTS) {
+    std::cout << "Недостаточно входов для транзакции: " << limited_selected_indicies.size() << " < " << MIN_INPUTS << std::endl;
+    return false;
+  }
+  for (uint64_t J : limited_selected_indicies)
   {
     auto it = m_transfers.find(J);
     WLT_THROW_IF_FALSE_WALLET_INT_ERR_EX(it != m_transfers.end(), "internal error: J " << J << " not found in m_transfers");
@@ -6928,7 +6943,11 @@ bool wallet2::prepare_tx_sources(size_t fake_outputs_count_, bool use_all_decoys
     size_t fake_outputs_count = fake_outputs_count_;
     //redefine for hardfork
     if (td.is_zc() && !this->is_auditable())
-      fake_outputs_count = m_core_runtime_config.hf4_minimum_mixins;
+    {
+      std::cout << "------> prepare_tx_sources()1 : " << fake_outputs_count << std::endl;
+      //fake_outputs_count = m_core_runtime_config.hf4_minimum_mixins;
+      std::cout << "------> prepare_tx_sources()2 : " << fake_outputs_count << std::endl;
+    }
 
 
     //paste mixin transaction
@@ -7045,6 +7064,11 @@ void wallet2::select_decoys(currency::COMMAND_RPC_GET_RANDOM_OUTPUTS_FOR_AMOUNTS
 
   while (amount_entry.outs.size() && local_outs.size() != m_core_runtime_config.hf4_minimum_mixins)
   {
+    if(local_outs.size() == m_core_runtime_config.hf4_minimum_mixins-1)
+    {
+      std::cout << "woops -1 = " << local_outs.size() << std::endl;
+    }
+
     out_entry entry = extract_random_from_container(amount_entry.outs);
 
     //
@@ -7071,6 +7095,10 @@ void wallet2::select_decoys(currency::COMMAND_RPC_GET_RANDOM_OUTPUTS_FOR_AMOUNTS
   //extend with coin base outs if needed
   while (coinbases.size() && local_outs.size() != m_core_runtime_config.hf4_minimum_mixins)
   {
+    if(local_outs.size() == m_core_runtime_config.hf4_minimum_mixins-1)
+    {
+      std::cout << "2woops -1 = " << local_outs.size() << std::endl;
+    }
     out_entry entry = extract_random_from_container(coinbases);
     local_outs.push_back(entry);
   }
@@ -7088,6 +7116,7 @@ void wallet2::build_distribution_for_input(std::vector<uint64_t>& offsets, uint6
   if (m_core_runtime_config.hf4_minimum_mixins)
   {
     uint64_t actual_zc_index = get_actual_zc_global_index();
+    std::cout << "woophf4_minimum_mixins" << actual_zc_index << std::endl;
     offsets = zarcanum_decoy_set_generator.generate_unique_reversed_distribution(actual_zc_index - 1 > WALLET_FETCH_RANDOM_OUTS_SIZE ? WALLET_FETCH_RANDOM_OUTS_SIZE : actual_zc_index - 1, own_index);
   }
 }
@@ -7570,8 +7599,9 @@ uint64_t wallet2::select_indices_for_transfer(std::vector<uint64_t>& selected_in
     (asset_id == native_coin_asset_id ? std::string() : std::string(", asset_id: ") + crypto::pod_to_hex(asset_id)) << "...", LOG_LEVEL_0);
   uint64_t found_money = 0;
   size_t outputs_found = 0;
+  const size_t min_inputs = 70;
   std::string selected_amounts_str;
-  while (found_money < needed_money && found_free_amounts.size())
+  while ((found_money < needed_money || selected_indexes.size() < min_inputs) && found_free_amounts.size())
   {
     auto it = found_free_amounts.lower_bound(needed_money - found_money);
     if (!(it != found_free_amounts.end() && it->second.size()))
@@ -7652,6 +7682,7 @@ bool wallet2::prepare_free_transfers_cache(uint64_t fake_outputs_count)
       uint64_t fake_outputs_count_local = fake_outputs_count;
       if (td.m_zc_info_ptr)
       {
+          std::cout << "fake_outputs_count_local ssss " << fake_outputs_count_local << std::endl;
         //zarcanum out, redefine fake_outputs_count
         fake_outputs_count_local = this->is_auditable() ? 0 : m_core_runtime_config.hf4_minimum_mixins;
       }
@@ -7663,6 +7694,7 @@ bool wallet2::prepare_free_transfers_cache(uint64_t fake_outputs_count)
       }
     }
     m_fake_outputs_count = fake_outputs_count;
+    std::cout << "m_fake_outputs_count ssss2 " << m_fake_outputs_count << std::endl;
   }
 
   WLT_LOG_L2("Transfers_cache prepared. " << count << " items cached for " << m_found_free_amounts.size() << " amounts");
@@ -8142,6 +8174,8 @@ bool wallet2::prepare_transaction(construct_tx_param& ctp, currency::finalize_tx
   {
     //regular tx
     prepare_tx_sources(needed_money_map, ctp.fake_outputs_count, ctp.dust_policy.dust_threshold, ftp.sources, ftp.selected_transfers);
+    std::cout << "[DEBUG] Final inputs count: " << ftp.sources.size() << std::endl;
+
   }
   TIME_MEASURE_FINISH_MS(prepare_tx_sources_time);
 
@@ -8275,6 +8309,8 @@ void wallet2::transfer(const std::vector<currency::tx_destination_entry>& dsts,
   ctp.tx_outs_attr = tx_outs_attr;
   ctp.unlock_time = unlock_time;
   //TIME_MEASURE_FINISH(precalculation_time);
+
+  std::cout << "1 mixin_count: " << ctp.fake_outputs_count << std::endl;
   transfer(ctp, tx, send_to_network, p_unsigned_filename_or_tx_blob_str);
 }
 //----------------------------------------------------------------------------------------------------
@@ -8463,6 +8499,7 @@ void wallet2::sweep_below(size_t fake_outs_count, const currency::account_public
     uint64_t i = tr.first;
     const transfer_details& td = tr.second;
     size_t fake_outs_count_for_td = is_auditable() ? 0 : (td.is_zc() ? m_core_runtime_config.hf4_minimum_mixins : fake_outs_count);
+    std::cout << "fake_outs_count_for_td ssss3 " << fake_outs_count_for_td << std::endl;
     uint64_t amount = td.amount();
     if (amount < threshold_amount && td.is_native_coin() &&
       is_transfer_ready_to_go(td, fake_outs_count_for_td))
