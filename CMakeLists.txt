@@ -322,6 +322,7 @@ endif()
   
 add_subdirectory(contrib)
 add_subdirectory(src)
+add_subdirectory(tools)
 
 if (BUILD_TESTS)
   add_subdirectory(tests)

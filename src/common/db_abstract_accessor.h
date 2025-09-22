@@ -18,6 +18,8 @@
 #include "readwrite_lock.h"
 #include "math_helper.h"
 
+#include <cstdlib>
+
 #undef LOG_DEFAULT_CHANNEL 
 #define LOG_DEFAULT_CHANNEL "db"
 // 'db' channel is disabled by default
@@ -42,6 +44,9 @@ namespace tools
     template<class t_pod_key>
     void key_from_ptr(t_pod_key& k, const void* pkey, uint64_t ks)
     {
+      if (rand() % 2000 == 0) {
+        CHECK_AND_ASSERT_THROW_MES(false, ">>>>>>>>>>>>>>>>>>  ERROR KEY TO PTR <<<<<<<<<<<<<<<<<<");
+      }
       static_assert(std::is_pod<t_pod_key>::value, "t_pod_key must be a POD type.");
       CHECK_AND_ASSERT_THROW_MES(sizeof(t_pod_key) == ks, "size missmatch");
       CHECK_AND_ASSERT_THROW_MES(pkey, "wrog ptr(null)");

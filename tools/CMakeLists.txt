@@ -1,0 +1,1 @@
+add_subdirectory(get_bin_req_file)
