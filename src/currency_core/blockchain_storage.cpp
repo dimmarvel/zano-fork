@@ -3144,7 +3144,8 @@ bool blockchain_storage::get_random_outs_for_amounts4(const COMMAND_RPC_GET_RAND
   res.blocks.clear();
   res.blocks.reserve(req.heights.size());
 
-  auto search_pass = [&](const std::string& strategy) {
+  auto search_pass = [&](const std::string& strategy)
+  {
     seen_heights.clear();
     for (uint64_t seed_height_original : req.heights)
     {
@@ -3184,16 +3185,14 @@ bool blockchain_storage::get_random_outs_for_amounts4(const COMMAND_RPC_GET_RAND
             if (is_block_fit_for_strategy(candidate_height, strategy))
             {
               std::vector<COMMAND_RPC_GET_RANDOM_OUTPUTS_FOR_AMOUNTS::out_entry> oe;
-              if (collect_all_outs_in_block(candidate_height, oe) && !oe.empty())
-              {
-                picked_heights.insert(candidate_height);
+              collect_all_outs_in_block(candidate_height, oe);
+              picked_heights.insert(candidate_height);
 
-                COMMAND_RPC_GET_RANDOM_OUTPUTS_FOR_AMOUNTS4::outputs_in_block blk_outs{};
-                blk_outs.block_height = candidate_height;
-                blk_outs.outs = std::move(oe);
-                res.blocks.push_back(std::move(blk_outs));
-                break; // found for this seed
-              }
+              COMMAND_RPC_GET_RANDOM_OUTPUTS_FOR_AMOUNTS4::outputs_in_block blk_outs{};
+              blk_outs.block_height = candidate_height;
+              blk_outs.outs = std::move(oe);
+              res.blocks.push_back(std::move(blk_outs));
+              break; // found for this seed
             }
           }
         }
@@ -3220,8 +3219,8 @@ bool blockchain_storage::get_random_outs_for_amounts4(const COMMAND_RPC_GET_RAND
     }
   };
 
-  search_pass(LOOK_UP_STRATEGY_POS_COINBASE);
-  if(res.blocks.size() == 0)
+  search_pass(req.look_up_strategy);
+  if(res.blocks.size() == 0 && req.look_up_strategy != LOOK_UP_STRATEGY_REGULAR_TX)
   {
     search_pass(LOOK_UP_STRATEGY_REGULAR_TX);
   }
@@ -8789,12 +8788,7 @@ bool blockchain_storage::is_block_fit_for_strategy(uint64_t h, const std::string
   }
   else if (strategy == LOOK_UP_STRATEGY_POS_COINBASE)
   {
-    if (get_last_x_block_height(/*pos=*/true) == 0)
-    {
-      return true;
-    }
-
-    return is_pos_block(blk) && !blk.tx_hashes.empty();
+    return is_pos_block(blk);
   }
   else
   {
@@ -8818,15 +8812,10 @@ bool blockchain_storage::collect_all_outs_in_block(uint64_t height, std::vector<
   auto process_tx = [&](const crypto::hash& txid, const transaction& tx)
   {
     std::vector<uint64_t> gidx;
-    if (!this->get_tx_outputs_gindexs(txid, gidx))
-    {
-      return; // skipping
-    }
 
-    if (gidx.size() != tx.vout.size())
-    {
-      return; // inconsistent
-    }
+    CHECK_AND_ASSERT_MES(this->get_tx_outputs_gindexs(txid, gidx), false, "Failed to get_tx_outputs_gindexs() for tx_id " << txid);
+    CHECK_AND_ASSERT_MES(gidx.size() == tx.vout.size(), false, "gidx size (" << gidx.size() << ") != tx vout size (" << tx.vout.size() << ") for tx_id " << txid);
+
 
     for (size_t i = 0; i < tx.vout.size(); ++i)
     {

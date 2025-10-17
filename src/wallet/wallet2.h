@@ -661,6 +661,13 @@ namespace tools
     //TODO: Need refactoring - remove it back to private zone 
     void set_genesis(const crypto::hash& genesis_hash);
     bool prepare_and_sign_pos_block(const mining_context& cxt, uint64_t full_block_reward, const currency::pos_entry& pe, currency::tx_generation_context& miner_tx_tgc, currency::block& b) const;
+    struct zc_ring_prep_result
+    {
+      std::vector<crypto::CLSAG_GGXXG_input_ref_t> ring;
+      uint64_t secret_index = 0;
+    };
+    bool prepare_zc_stake_input_and_ring(const transfer_details& td, const currency::tx_out_zarcanum& stake_out, currency::block& b,
+      const currency::pos_entry& pe, currency::txin_zc_input& stake_input, zc_ring_prep_result& out) const;
     void process_new_blockchain_entry(const currency::block& b, 
       const currency::block_direct_data_entry& bche, 
       const crypto::hash& bl_id,
