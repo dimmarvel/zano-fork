@@ -8809,29 +8809,25 @@ bool blockchain_storage::collect_all_outs_in_block(uint64_t height, std::vector<
   const block& bl = bei.bl;
   const uint64_t mix_count = this->get_core_runtime_config().hf4_minimum_mixins;
 
-  auto process_tx = [&](const crypto::hash& txid, const transaction& tx)
+  auto process_tx = [&](const crypto::hash& txid, const transaction& tx) -> bool
   {
     std::vector<uint64_t> gidx;
 
     CHECK_AND_ASSERT_MES(this->get_tx_outputs_gindexs(txid, gidx), false, "Failed to get_tx_outputs_gindexs() for tx_id " << txid);
     CHECK_AND_ASSERT_MES(gidx.size() == tx.vout.size(), false, "gidx size (" << gidx.size() << ") != tx vout size (" << tx.vout.size() << ") for tx_id " << txid);
 
-
     for (size_t i = 0; i < tx.vout.size(); ++i)
     {
       uint64_t amount = 0;
-      bool is_zc = false;
 
       VARIANT_SWITCH_BEGIN(tx.vout[i]);
       VARIANT_CASE_CONST(tx_out_bare, o)
       {
         amount = o.amount;
-        is_zc = false;
       }
       VARIANT_CASE_CONST(tx_out_zarcanum, dummy_zc)
       {
         amount = 0;
-        is_zc = true;
       }
       VARIANT_SWITCH_END();
 
@@ -8841,12 +8837,14 @@ bool blockchain_storage::collect_all_outs_in_block(uint64_t height, std::vector<
         outs.emplace_back(oen);
       }
     }
+    return true;
   };
 
   // miner tx
   {
     const crypto::hash miner_txid = get_transaction_hash(bl.miner_tx);
-    process_tx(miner_txid, bl.miner_tx);
+    if(!process_tx(miner_txid, bl.miner_tx))
+      return false;
   }
 
   // regular txs
@@ -8858,7 +8856,8 @@ bool blockchain_storage::collect_all_outs_in_block(uint64_t height, std::vector<
       continue; // cant find - skipping
     }
 
-    process_tx(txid, tx_ptr->tx);
+    if(!process_tx(txid, tx_ptr->tx))
+      return false;
   }
 
   return true; // even if 0 outs
