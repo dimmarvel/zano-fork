@@ -10,6 +10,7 @@
 #include "util.h"
 
 #define BUF_SIZE 1024
+#define MAX_DBS 15
 
 #define CHECK_AND_ASSERT_MESS_LMDB_DB(rc, ret, mess) CHECK_AND_ASSERT_MES(rc == MDB_SUCCESS, ret, "[DB ERROR]:(" << rc << ")" << mdb_strerror(rc) << ", [message]: " << mess);
 #define CHECK_AND_ASSERT_THROW_MESS_LMDB_DB(rc, mess) CHECK_AND_ASSERT_THROW_MES(rc == MDB_SUCCESS, "[DB ERROR]:(" << rc << ")" << mdb_strerror(rc) << ", [message]: " << mess);
@@ -23,35 +24,29 @@ namespace tools
 {
   namespace db
   {
-    lmdb_db_backend::lmdb_db_backend() : m_penv(AUTO_VAL_INIT(m_penv))  
-    {
-
-    }
+    lmdb_db_backend::lmdb_db_backend()= default;
     lmdb_db_backend::~lmdb_db_backend()
     {
       NESTED_TRY_ENTRY();
-
       close();
-
       NESTED_CATCH_ENTRY(__func__);
     }
 
-    bool lmdb_db_backend::open(const std::string& path_, uint64_t cache_sz)
+    bool lmdb_db_backend::open(const std::string& path, uint64_t cache_sz)
     {
-      int res = 0;
-      res = mdb_env_create(&m_penv);
+      int res = mdb_env_create(&m_env_.get());
       CHECK_AND_ASSERT_MESS_LMDB_DB(res, false, "Unable to mdb_env_create");
-      
-      res = mdb_env_set_maxdbs(m_penv, 15);
-      CHECK_AND_ASSERT_MESS_LMDB_DB(res, false, "Unable to mdb_env_set_maxdbs");
 
-      res = mdb_env_set_mapsize(m_penv, cache_sz);
+      res = mdb_env_set_maxdbs(m_env_.get(), MAX_DBS);
+      CHECK_AND_ASSERT_MESS_LMDB_DB(res, false, "Unable to mdb_env_set_maxdbs");
+      
+      res = mdb_env_set_mapsize(m_env_.get(), cache_sz);
       CHECK_AND_ASSERT_MESS_LMDB_DB(res, false, "Unable to mdb_env_set_mapsize");
       
-      m_path = path_;
-      CHECK_AND_ASSERT_MES(tools::create_directories_if_necessary(m_path), false, "create_directories_if_necessary failed: " << m_path);
-
-      res = mdb_env_open(m_penv, m_path.c_str(), MDB_NORDAHEAD , 0644);
+      m_path_ = path;
+      CHECK_AND_ASSERT_MES(tools::create_directories_if_necessary(m_path_), false, "create_directories_if_necessary failed: " << m_path);
+      
+      res = mdb_env_open(m_env_.get(), m_path_.c_str(), MDB_NORDAHEAD, 0644);
       CHECK_AND_ASSERT_MESS_LMDB_DB(res, false, "Unable to mdb_env_open, m_path=" << m_path);
       
       return true;
@@ -59,7 +54,7 @@ namespace tools
 
     bool lmdb_db_backend::open_container(const std::string& name, container_handle& h)
     {
-      MDB_dbi dbi = AUTO_VAL_INIT(dbi);
+      MDB_dbi dbi{};
       begin_transaction();
       int res = mdb_dbi_open(get_current_tx(), name.c_str(), MDB_CREATE, &dbi);
       CHECK_AND_ASSERT_MESS_LMDB_DB(res, false, "Unable to mdb_dbi_open with container name: " << name);
@@ -74,7 +69,7 @@ namespace tools
       CHECK_AND_ASSERT_MES(h != null_handle, false, "close_container is called for null container handle");
       MDB_dbi dbi = static_cast<MDB_dbi>(h);
       begin_transaction();
-      mdb_dbi_close(m_penv, dbi);
+      mdb_dbi_close(m_env_.get(), dbi);
       commit_transaction();
       h = null_handle;
       return true;
@@ -82,27 +77,23 @@ namespace tools
 
     bool lmdb_db_backend::close()
     {
+      std::lock_guard<boost::recursive_mutex> lock(m_cs);
+      for (auto& [tx_thread, txs] : m_txs)
       {
-        std::lock_guard<boost::recursive_mutex> lock(m_cs);
-        for (auto& tx_thread : m_txs)
+        for (auto& tx_guard : txs)
         {
-          for (auto txe : tx_thread.second)
+          if (!tx_guard.m_finalized && tx_guard.txn)
           {
-            int res = mdb_txn_commit(txe.ptx);
-            if (res != MDB_SUCCESS)
+            int res = tx_guard.finalize();
+            if (res != MDB_SUCCESS) 
             {
-              LOG_ERROR("[DB ERROR]: On close tranactions: " << mdb_strerror(res));
+              LOG_ERROR("[DB ERROR]: On close transactions: " << mdb_strerror(res));
             }
           }
         }
-
-        m_txs.clear();
       }
-      if (m_penv)
-      {
-        mdb_env_close(m_penv);
-        m_penv = nullptr;
-      }
+      m_txs.clear();
+      m_env_.reset();  // env_deleter closes
       return true;
     }
 
@@ -110,58 +101,45 @@ namespace tools
     {
       if (!read_only)
       {
-        LOG_PRINT_CYAN("[DB " << m_path << "] WRITE LOCKED", LOG_LEVEL_3);
+        LOG_PRINT_CYAN("[DB " << m_path_ << "] WRITE LOCKED", LOG_LEVEL_3);
         CRITICAL_SECTION_LOCK(m_write_exclusive_lock);
       }
       PROFILE_FUNC("lmdb_db_backend::begin_transaction");
+      std::lock_guard<boost::recursive_mutex> lock(m_cs);
+      CHECK_AND_ASSERT_THROW_MES(m_penv_, "m_penv==null, db closed");
+
+      auto& txs = m_txs[std::this_thread::get_id()];
+      MDB_txn* pparent = nullptr;
+      bool parent_read_only = false;
+      if(!txs.empty())
       {
-        std::lock_guard<boost::recursive_mutex> lock(m_cs);
-        CHECK_AND_ASSERT_THROW_MES(m_penv, "m_penv==null, db closed");
-        transactions_list& rtxlist = m_txs[std::this_thread::get_id()];
-        MDB_txn* pparent_tx = nullptr;
-        MDB_txn* p_new_tx = nullptr;
-        bool parent_read_only = false;
-        if (rtxlist.size())
-        {
-          pparent_tx = rtxlist.back().ptx;
-          parent_read_only = rtxlist.back().read_only;
-        }
-
-
-        if (pparent_tx && read_only)
-        {
-          ++rtxlist.back().count;
-        }
-        else
-        {
-          int res = 0;
-          unsigned int flags = 0;
-          if (read_only)
-            flags += MDB_RDONLY;
-
-          //don't use parent tx in write transactions if parent tx was read-only (restriction in lmdb) 
-          //see "Nested transactions: Max 1 child, write txns only, no writemap"
-          if (pparent_tx && parent_read_only)
-            pparent_tx = nullptr;
-
-          CHECK_AND_ASSERT_THROW_MES(m_penv, "m_penv==null, db closed");
-          res = mdb_txn_begin(m_penv, pparent_tx, flags, &p_new_tx);
-          if(res != MDB_SUCCESS)
-          {
-            //Important: if mdb_txn_begin is failed need to unlock previously locked mutex
-            CRITICAL_SECTION_UNLOCK(m_write_exclusive_lock);
-            //throw exception to avoid regular code execution 
-            ASSERT_MES_AND_THROW_LMDB(res, "Unable to mdb_txn_begin");
-          }
-
-          rtxlist.push_back(tx_entry());
-          rtxlist.back().count = read_only ? 1 : 0;
-          rtxlist.back().ptx = p_new_tx;
-          rtxlist.back().read_only = read_only;
-        }
+        pparent = txs.back().txn;
+        parent_read_only = txs.back().read_only;
       }
 
+      if (!txs.empty() && read_only && txs.back().read_only)
+      {
+        ++txs.back().nesting;
+      }
+      else
+      {
+        MDB_txn* parent = nullptr;
+        if (txs.empty())
+        {
+          parent = nullptr;
+        }
+        else {
+          //don't use parent tx in write transactions if parent tx was read-only (restriction in lmdb) 
+          //see "Nested transactions: Max 1 child, write txns only, no writemap"
+          if (txs.back().read_only)
+            parent = nullptr;
+          else
+            parent = txs.back().txn;
+        }
 
+        txn_guard guard(*this, read_only ? txn_mode::read_only : txn_mode::read_write, parent);
+        txs.emplace_back(std::move(guard));
+      }
       LOG_PRINT_L4("[DB] Transaction started");
       return true;
     }
@@ -174,7 +152,7 @@ namespace tools
       return rtxlist.back().ptx;
     }
 
-    bool lmdb_db_backend::pop_tx_entry(tx_entry& txe)
+    bool lmdb_db_backend::pop_tx_guard(txn_guard& g)
     {
       std::lock_guard<boost::recursive_mutex> lock(m_cs);
       auto it = m_txs.find(std::this_thread::get_id());
@@ -183,12 +161,12 @@ namespace tools
 
       txe = it->second.back();
 
-      if (it->second.back().read_only &&  it->second.back().count == 0)
+      if (it->second.back().read_only &&  it->second.back().nesting == 0)
       {
-        LOG_ERROR("Internal db tx state error: read_only and count readers == 0");
+        LOG_ERROR("Internal db tx state error: read_only and nesting readers == 0");
       }
 
-      if ((it->second.back().read_only && it->second.back().count < 2) || (!it->second.back().read_only && it->second.back().count < 1))
+      if ((it->second.back().read_only && it->second.back().nesting < 2) || (!it->second.back().read_only && it->second.back().nesting < 1))
       {
         it->second.pop_back();
         if (!it->second.size())
@@ -196,7 +174,7 @@ namespace tools
       }
       else
       {
-        --it->second.back().count;
+        --it->second.back().nesting;
       }
       return true;
     }
@@ -204,56 +182,57 @@ namespace tools
     bool lmdb_db_backend::commit_transaction()
     {
       PROFILE_FUNC("lmdb_db_backend::commit_transaction");
+      tx_entry txe{};
+      bool r = pop_tx_entry(txe);
+      CHECK_AND_ASSERT_MES(r, false, "Unable to pop_tx_entry");
+      if (txe.nesting == 0 || (txe.read_only && txe.nesting == 1))
       {
-        tx_entry txe = AUTO_VAL_INIT(txe);
-        bool r = pop_tx_entry(txe);
-        CHECK_AND_ASSERT_MES(r, false, "Unable to pop_tx_entry");
-          
-        if (txe.count == 0 || (txe.read_only && txe.count == 1))
+        if (txe.read_only)
         {
-          int res = 0;
-          res = mdb_txn_commit(txe.ptx);
+          mdb_txn_abort(txe.txn);
+        }
+        else
+        {
+          int res = mdb_txn_commit(txe.txn);
           CHECK_AND_ASSERT_MESS_LMDB_DB(res, false, "Unable to mdb_txn_commit (error " << res << ")");
+
           if (!txe.read_only && !txe.count)
           {
             CRITICAL_SECTION_UNLOCK(m_write_exclusive_lock);
             LOG_PRINT_CYAN("[DB " << m_path << "] WRITE UNLOCKED", LOG_LEVEL_3);
           }
-        } 
+        }
       }
       LOG_PRINT_L4("[DB] Transaction committed");
       return true;
     }
-    
-    void lmdb_db_backend::abort_transaction()
+
+    void lmdb_db_backend::abort_transaction() noexcept
     {
       {
-        tx_entry txe = AUTO_VAL_INIT(txe);
+        tx_entry txe{};
         bool r = pop_tx_entry(txe);
         CHECK_AND_ASSERT_MES(r, void(), "Unable to pop_tx_entry");
         if (txe.count == 0 || (txe.read_only && txe.count == 1))
         {
-          mdb_txn_abort(txe.ptx);
-          if (!txe.read_only && !txe.count)
+          mdb_txn_abort(txe.txn);
+          if (!txe.read_only)
           {
             CRITICAL_SECTION_UNLOCK(m_write_exclusive_lock);
-            LOG_PRINT_CYAN("[DB " << m_path << "] WRITE UNLOCKED(ABORTED)", LOG_LEVEL_3);
+            LOG_PRINT_CYAN("[DB " << m_path_ << "] WRITE UNLOCKED(ABORTED)", LOG_LEVEL_3);
           }
         }
-          
-
       }
       LOG_PRINT_L4("[DB] Transaction aborted");
     }
 
     bool lmdb_db_backend::erase(container_handle h, const char* k, size_t ks)
     {
-      int res = 0;
       MDB_val key = AUTO_VAL_INIT(key);
       key.mv_data = (void*)k;
       key.mv_size = ks;
 
-      res = mdb_del(get_current_tx(), static_cast<MDB_dbi>(h), &key, nullptr);
+      int res = mdb_del(get_current_tx(), static_cast<MDB_dbi>(h), &key, nullptr);
       if (res == MDB_NOTFOUND)
         return false;
       CHECK_AND_ASSERT_MESS_LMDB_DB(res, false, "Unable to mdb_del");
@@ -272,32 +251,24 @@ namespace tools
     bool lmdb_db_backend::get(container_handle h, const char* k, size_t ks, std::string& res_buff)
     {
       PROFILE_FUNC("lmdb_db_backend::get");
-      int res = 0;
-      MDB_val key = AUTO_VAL_INIT(key);
-      MDB_val data = AUTO_VAL_INIT(data);
-      key.mv_data = (void*)k;
+      MDB_val key{}, data{};
+      key.mv_data = static_cast<void*>(const_cast<char*>(k));
       key.mv_size = ks;
-      bool need_to_commit = false;
-      if (!have_tx())
-      {
-        need_to_commit = true;
-        begin_transaction(true);
-      }
 
-      res = mdb_get(get_current_tx(), static_cast<MDB_dbi>(h), &key, &data);
+      bool need_to_commit = !have_tx();
+      if (need_to_commit)
+        begin_transaction(true);
+
+      int res = mdb_get(get_current_tx(), static_cast<MDB_dbi>(h), &key, &data);
 
       if (need_to_commit)
         commit_transaction();
 
-      if (res == MDB_NOTFOUND)
+      if (res == MDB_NOTFOUND || res != MDB_SUCCESS) 
         return false;
-      if (res != MDB_SUCCESS)
-      {
-        return false;
-      }
-
+  
       CHECK_AND_ASSERT_MESS_LMDB_DB(res, false, "Unable to mdb_get, h: " << h << ", ks: " << ks);
-      res_buff.assign((const char*)data.mv_data, data.mv_size);
+      res_buff.assign(static_cast<char*>(data.mv_data), data.mv_size);
       return true;
     }
 
@@ -307,17 +278,14 @@ namespace tools
       CHECK_AND_ASSERT_MESS_LMDB_DB(res, false, "Unable to mdb_drop");
       return true;
     }
-    
+
     uint64_t lmdb_db_backend::size(container_handle h)
     {
       PROFILE_FUNC("lmdb_db_backend::size");
       MDB_stat container_stat = AUTO_VAL_INIT(container_stat);
-      bool need_to_commit = false;
-      if (!have_tx())
-      {
-        need_to_commit = true;
+      bool need_to_commit = !have_tx();
+      if (need_to_commit)
         begin_transaction(true);
-      }
       int res = mdb_stat(get_current_tx(), static_cast<MDB_dbi>(h), &container_stat);
       if (need_to_commit)
         commit_transaction();
@@ -329,45 +297,36 @@ namespace tools
     {
       PROFILE_FUNC("lmdb_db_backend::set");
       int res = 0;
-      MDB_val key = AUTO_VAL_INIT(key);
+      MDB_val key{};
       MDB_val data[2] = {}; // mdb_put may access data[1] if some flags are set, this may trigger static code analizers, so here we allocate two elements to avoid it
-      key.mv_data = (void*)k;
+      key.mv_data = static_cast<void*>(const_cast<char*>(k));
       key.mv_size = ks;
-      data[0].mv_data = (void*)v;
+      data[0].mv_data = static_cast<void*>(const_cast<char*>(v));
       data[0].mv_size = vs;
 
       res = mdb_put(get_current_tx(), static_cast<MDB_dbi>(h), &key, data, 0);
       CHECK_AND_ASSERT_MESS_LMDB_DB(res, false, "Unable to mdb_put");
       return true;
     }
+
     bool lmdb_db_backend::enumerate(container_handle h, i_db_callback* pcb)
     {
       CHECK_AND_ASSERT_MES(pcb, false, "null capback ptr passed to enumerate");
-      MDB_val key = AUTO_VAL_INIT(key);
-      MDB_val data = AUTO_VAL_INIT(data);
+      MDB_val key{}, data{};
 
-      bool need_to_commit = false;
-      if (!have_tx())
-      {
-        need_to_commit = true;
+      bool need_to_commit = !have_tx();
+      if (need_to_commit)
         begin_transaction(true);
-      }
       MDB_cursor* cursor_ptr = nullptr;
       int res = mdb_cursor_open(get_current_tx(), static_cast<MDB_dbi>(h), &cursor_ptr);
       CHECK_AND_ASSERT_MESS_LMDB_DB(res, false, "Unable to mdb_cursor_open");
       CHECK_AND_ASSERT_MES(cursor_ptr, false, "cursor_ptr is null after mdb_cursor_open");
 
-      uint64_t count = 0;
-      do
+      while ((rc = mdb_cursor_get(cur, &key, &data, MDB_NEXT)) == MDB_SUCCESS)
       {
-        int res = mdb_cursor_get(cursor_ptr, &key, &data, MDB_NEXT);
-        if (res == MDB_NOTFOUND)
+        if (!cb->on_enum_item(count++, key.mv_data, key.mv_size, data.mv_data, data.mv_size))
           break;
-        if (!pcb->on_enum_item(count, key.mv_data, key.mv_size, data.mv_data, data.mv_size))
-          break;
-        count++;
-      } while (cursor_ptr);
-
+      }
       mdb_cursor_close(cursor_ptr);
       if (need_to_commit)
         commit_transaction();
@@ -376,9 +335,9 @@ namespace tools
 
     bool lmdb_db_backend::get_stat_info(tools::db::stat_info& si)
     {
-      si = AUTO_VAL_INIT_T(tools::db::stat_info);
+      si = {};
 
-      MDB_envinfo ei = AUTO_VAL_INIT(ei);
+      MDB_envinfo ei{};
       mdb_env_info(m_penv, &ei);
       si.map_size = ei.me_mapsize;
       
@@ -455,6 +414,95 @@ namespace tools
       #undef MDB_CHECK
     }
 
+    lmdb_db_backend::txn_guard::txn_guard(lmdb_db_backend& db, txn_mode mode, MDB_txn* parent)
+      : m_db(db), read_only(mode == txn_mode::read_only)
+    {
+      unsigned flags = read_only ? MDB_RDONLY : 0;
+      int res = mdb_txn_begin(m_db.m_env_.get(), parent, flags, &txn);
+      if (res != MDB_SUCCESS)
+      {
+        if (!read_only)
+        {
+          CRITICAL_SECTION_UNLOCK(m_db.m_write_exclusive_lock);
+        }
+        ASSERT_MES_AND_THROW_LMDB(res, "mdb_txn_begin failed");
+      }
+      // nesting starts at 0; nested read-only increments in begin_transaction()
+    }
+
+    lmdb_db_backend::lmdb_txn::lmdb_txn(lmdb_db_backend& db, bool read_only, MDB_txn* parent_tx)
+      : m_db(db), m_finalized(false)
+    {
+      unsigned int flags = read_only ? MDB_RDONLY : 0;
+      MDB_txn* new_tx = nullptr;
+      int res = mdb_txn_begin(m_db.m_penv, parent_tx, flags, &new_tx);
+      if (res != MDB_SUCCESS)
+      {
+        if (!read_only)
+        {
+          //Important: if mdb_txn_begin is failed need to unlock previously locked mutex
+          CRITICAL_SECTION_UNLOCK(m_db.m_write_exclusive_lock);
+        }
+        //throw exception to avoid regular code execution 
+        ASSERT_MES_AND_THROW_LMDB(res, "Unable to mdb_txn_begin");
+      }
+    }
+
+    void begin()
+    {
+      unsigned flags = read_only ? MDB_RDONLY : 0;
+      int rc = mdb_txn_begin(m_db.m_env_.get(), parent_tx, flags, &txn);
+      if (rc != MDB_SUCCESS) {
+        if (!read_only) 
+          CRITICAL_SECTION_UNLOCK(m_db.m_write_exclusive_lock);
+        ASSERT_MES_AND_THROW_LMDB(rc, "mdb_txn_begin failed");
+      }
+    }
+
+    bool lmdb_db_backend::txn_guard::finalize()
+    {
+      if (!txn)
+        return true;
+      if (read_only)
+      {
+        mdb_txn_abort(txn);
+      }
+      else
+      {
+        int res = mdb_txn_commit(txn);
+        ASSERT_MES_AND_THROW_LMDB(res, "mdb_txn_commit finalize failed");
+      }
+      m_finalized = true;
+      return m_finalized;
+    }
+
+    void lmdb_db_backend::txn_guard::commit_or_abort()
+    {
+      if (read_only) 
+      {
+        mdb_txn_abort(txn);
+      }
+      else
+      {
+        int res = mdb_txn_commit(txn);
+        ASSERT_MES_AND_THROW_LMDB(res, "mdb_txn_commit commit_or_abort failed");
+        CRITICAL_SECTION_UNLOCK(m_db.m_write_exclusive_lock);
+      }
+      m_finalized = true;
+    }
+
+    lmdb_db_backend::txn_guard::~txn_guard() noexcept
+    {
+      if (!m_finalized && txn)
+      {
+        mdb_txn_abort(txn);
+        if (!read_only)
+        {
+          CRITICAL_SECTION_UNLOCK(m_db.m_write_exclusive_lock);
+        }
+        LOG_PRINT_L4("[DB] Transaction aborted in destructor");
+      }
+    }
   }
 }
 
