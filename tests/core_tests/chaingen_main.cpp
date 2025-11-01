@@ -1319,6 +1319,7 @@ int main(int argc, char* argv[])
     GENERATE_AND_PLAY_HF(several_asset_emit_burn_txs_in_pool, "5-*");
     GENERATE_AND_PLAY_HF(assets_transfer_with_smallest_amount, "4-*");
     GENERATE_AND_PLAY_HF(asset_operations_and_chain_switching, "4-*");
+    GENERATE_AND_PLAY_HF(asset_ops_boost_chain_transition_core, "4-*");
 
     GENERATE_AND_PLAY_HF(pos_fuse_test, "4-*");
     GENERATE_AND_PLAY_HF(wallet_reorganize_and_trim_test, "4-*");
