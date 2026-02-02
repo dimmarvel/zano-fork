@@ -450,12 +450,30 @@ namespace nodetool
       END_KV_SERIALIZE_MAP()
     };
     
+
+    struct peerlist_stats
+    {
+      uint64_t  white_count;
+      uint64_t  grey_count;
+      uint64_t  local_time;
+ 
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE(white_count)
+        KV_SERIALIZE(grey_count)
+        KV_SERIALIZE(local_time)
+      END_KV_SERIALIZE_MAP()
+    };
+ 
     struct response
     {
       std::vector<anonymized_peer_info> peers;
-
+      std::list<peerlist_entry> peerlist;  // via handshake
+      peerlist_stats stats;
+ 
       BEGIN_KV_SERIALIZE_MAP()
         KV_SERIALIZE(peers)
+        KV_SERIALIZE_CONTAINER_POD_AS_BLOB(peerlist)
+        KV_SERIALIZE(stats)
       END_KV_SERIALIZE_MAP()
     };
   };

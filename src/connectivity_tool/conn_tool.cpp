@@ -946,7 +946,41 @@ bool handle_get_anonymized_peers(po::variables_map& vm)
 
   std::cout << "Success." << ENDL << ENDL;
 
-  std::cout << epee::serialization::store_t_to_json(rsp);
+  std::stringstream ss;
+  ss << "{" << ENDL;
+ 
+  ss << "  \"stats\": {" << ENDL;
+  ss << "    \"white_count\": " << rsp.stats.white_count << "," << ENDL;
+  ss << "    \"grey_count\": " << rsp.stats.grey_count << "," << ENDL;
+  ss << "    \"local_time\": " << rsp.stats.local_time << ENDL;
+  ss << "  }," << ENDL;
+ 
+  ss << "  \"peers\": [";
+  for (size_t i = 0; i < rsp.peers.size(); ++i)
+  {
+    const auto& p = rsp.peers[i];
+    ss << "{\"inbound\": " << (p.inbound ? "true" : "false")
+       << ", \"time_started\": " << p.time_started << "}";
+    if (i < rsp.peers.size() - 1) ss << ", ";
+  }
+  ss << "]," << ENDL;
+ 
+  ss << "  \"peerlist\": [" << ENDL;
+  size_t i = 0;
+  for (const auto& pe : rsp.peerlist)
+  {
+    ss << "    {\"peer_id\": \"" << pe.id << "\", "
+       << "\"ip\": \"" << string_tools::get_ip_string_from_int32(pe.adr.ip) << "\", "
+       << "\"port\": " << pe.adr.port << ", "
+       << "\"last_seen\": " << (rsp.stats.local_time - pe.last_seen) << "}";
+    if (i < rsp.peerlist.size() - 1) ss << ",";
+    ss << ENDL;
+    ++i;
+  }
+  ss << "  ]" << ENDL;
+  ss << "}" << ENDL;
+ 
+  std::cout << ss.str();
 
   return true;
 }

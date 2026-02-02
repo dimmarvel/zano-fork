@@ -1349,7 +1349,12 @@ namespace nodetool
       });
 
     std::shuffle(rsp.peers.begin(), rsp.peers.end(), crypto::uniform_random_bit_generator());
-
+    std::list<peerlist_entry> white_list;
+    m_peerlist.get_peerlist_full(rsp.peerlist, white_list);
+ 
+    rsp.stats.grey_count = rsp.peerlist.size();
+    rsp.stats.white_count = white_list.size();
+    rsp.stats.local_time = time(NULL);
     return 1;
   }
 #endif // #ifdef ALLOW_DEBUG_COMMANDS
