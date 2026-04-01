@@ -138,3 +138,17 @@ struct asset_operations_and_chain_switching : public wallet_test
 
   mutable crypto::public_key m_asset_ids[4];
 };
+
+struct asset_emit_exceeds_max_supply_in_pool : public wallet_test
+{
+  asset_emit_exceeds_max_supply_in_pool();
+  bool generate(std::vector<test_event_entry>& events) const;
+  bool c1(currency::core& c, size_t ev_index, const std::vector<test_event_entry>& events);
+};
+
+struct asset_emit_exceeds_max_supply : public wallet_test
+{
+  asset_emit_exceeds_max_supply();
+  bool generate(std::vector<test_event_entry>& events) const;
+  bool c1(currency::core& c, size_t ev_index, const std::vector<test_event_entry>& events);
+};

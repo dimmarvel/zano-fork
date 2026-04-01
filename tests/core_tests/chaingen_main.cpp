@@ -1420,6 +1420,9 @@ int main(int argc, char* argv[])
 
     GENERATE_AND_PLAY_HF(attachment_isolation_test, "4-*");
 
+    GENERATE_AND_PLAY_HF(asset_emit_exceeds_max_supply_in_pool, "5-*");
+    GENERATE_AND_PLAY_HF(asset_emit_exceeds_max_supply, "5-*");
+
     // GENERATE_AND_PLAY(gen_block_reward);
     // END OF TESTS  */
 

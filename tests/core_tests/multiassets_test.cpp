@@ -2978,3 +2978,203 @@ bool asset_operations_and_chain_switching::c3(currency::core& c, size_t ev_index
 
   return true;
 }
+
+asset_emit_exceeds_max_supply_in_pool::asset_emit_exceeds_max_supply_in_pool()
+{
+  REGISTER_CALLBACK_METHOD(asset_emit_exceeds_max_supply_in_pool, c1);
+}
+
+bool asset_emit_exceeds_max_supply_in_pool::generate(std::vector<test_event_entry>& events) const
+{
+  uint64_t ts = test_core_time::get_time();
+  m_accounts.resize(TOTAL_ACCS_COUNT);
+  account_base& miner_acc = m_accounts[MINER_ACC_IDX]; miner_acc.generate(); miner_acc.set_createtime(ts);
+  account_base& alice_acc = m_accounts[ALICE_ACC_IDX]; alice_acc.generate(); alice_acc.set_createtime(ts);
+
+  MAKE_GENESIS_BLOCK(events, blk_0, miner_acc, ts);
+  std::vector<tx_destination_entry> destinations;
+  destinations.emplace_back(MK_TEST_COINS(1), alice_acc.get_public_address());
+  destinations.emplace_back(MK_TEST_COINS(1), alice_acc.get_public_address());
+  CHECK_AND_ASSERT_MES(replace_coinbase_in_genesis_block(destinations, generator, events, blk_0), false, "");
+
+  DO_CALLBACK(events, "configure_core");
+  REWIND_BLOCKS_N_WITH_TIME(events, blk_0r, blk_0, miner_acc, CURRENCY_MINED_MONEY_UNLOCK_WINDOW + 3);
+
+  DO_CALLBACK(events, "c1");
+
+  return true;
+}
+
+bool asset_emit_exceeds_max_supply_in_pool::c1(currency::core& c, size_t ev_index, const std::vector<test_event_entry>& events)
+{
+  std::shared_ptr<tools::wallet2> miner_wlt = init_playtime_test_wallet(events, c, MINER_ACC_IDX);
+  miner_wlt->refresh();
+  std::shared_ptr<tools::wallet2> alice_wlt = init_playtime_test_wallet(events, c, ALICE_ACC_IDX);
+  alice_wlt->refresh();
+
+  asset_descriptor_base adb{};
+  adb.decimal_point = 0;
+  adb.total_max_supply = 100;
+  adb.full_name = "TestAsset";
+  adb.ticker = "TEST";
+
+  uint64_t initial_supply = 90;
+
+  // create a new asset
+  std::vector<tx_destination_entry> destinations;
+  destinations.emplace_back(initial_supply, m_accounts[ALICE_ACC_IDX].get_public_address(), null_pkey);
+  finalized_tx ft{};
+  crypto::public_key asset_id{};
+  miner_wlt->deploy_new_asset(adb, destinations, ft, asset_id);
+  LOG_PRINT_GREEN_L0("Asset " << asset_id << " deployed with initial supply " << initial_supply);
+
+  CHECK_AND_ASSERT_MES(c.get_pool_transactions_count() == 1, false, "Unexpected pool count: " << c.get_pool_transactions_count());
+  CHECK_AND_ASSERT_MES(mine_next_pow_block_in_playtime(m_accounts[MINER_ACC_IDX].get_public_address(), c), false, "");
+  CHECK_AND_ASSERT_MES(c.get_pool_transactions_count() == 0, false, "Pool should be empty after block");
+
+  size_t blocks_fetched = 0;
+  miner_wlt->refresh(blocks_fetched);
+  alice_wlt->refresh(blocks_fetched);
+  CHECK_AND_ASSERT_MES(check_balance_via_wallet(*alice_wlt, "Alice", initial_supply, asset_id, adb.decimal_point), false, "");
+
+  asset_descriptor_base registered_adb{};
+  CHECK_AND_ASSERT_MES(c.get_blockchain_storage().get_asset_info(asset_id, registered_adb), false, "get_asset_info failed");
+  CHECK_AND_ASSERT_EQ(registered_adb.current_supply, initial_supply);
+
+  LOG_PRINT_GREEN_L0("Starting emit sequence: current_supply=" << initial_supply << ", total_max=" << adb.total_max_supply);
+
+  // current_supply (90) + amount (8) = 98 <= total_max (100) - ok
+  destinations.clear();
+  destinations.emplace_back(8, m_accounts[ALICE_ACC_IDX].get_public_address(), null_pkey);
+  ft = finalized_tx{};
+  miner_wlt->emit_asset(asset_id, destinations, ft);
+  currency::transaction first_emit_tx = ft.tx;
+
+  CHECK_AND_ASSERT_MES(c.get_pool_transactions_count() == 1, false, "Pool should have 1 tx after first emit: " << c.get_pool_transactions_count());
+  LOG_PRINT_GREEN_L0("First emit (8) added to pool, pool count: " << c.get_pool_transactions_count());
+
+  // current_supply (90) + amount (8) = 98 <= total_max (100) - ok
+  destinations.clear();
+  destinations.emplace_back(8, m_accounts[ALICE_ACC_IDX].get_public_address(), null_pkey);
+  ft = finalized_tx{};
+  miner_wlt->emit_asset(asset_id, destinations, ft);
+
+  // both emit txs are valid at this point, so both should be in the pool
+  CHECK_AND_ASSERT_MES(c.get_pool_transactions_count() == 2, false, "Pool should have 2 txs after second emit: " << c.get_pool_transactions_count());
+  LOG_PRINT_GREEN_L0("Second emit (8) added to pool, pool count: " << c.get_pool_transactions_count());
+
+  // after mine block - current_supply == 98
+  // second tx stays in the pool because 98 + 8 = 106 > total_max (100)
+  std::vector<currency::transaction> txs_in_block;
+  txs_in_block.push_back(first_emit_tx);
+  CHECK_AND_ASSERT_MES(mine_next_pow_block_in_playtime_with_given_txs(m_accounts[MINER_ACC_IDX].get_public_address(), c, txs_in_block), false, "");
+  CHECK_AND_ASSERT_MES(c.get_pool_transactions_count() == 1, false, "Pool should have 1 tx after first block: " << c.get_pool_transactions_count());
+
+  CHECK_AND_ASSERT_MES(c.get_blockchain_storage().get_asset_info(asset_id, registered_adb), false, "get_asset_info failed");
+  CHECK_AND_ASSERT_EQ(registered_adb.current_supply, initial_supply + 8);
+  LOG_PRINT_GREEN_L0("After first block: current_supply=" << registered_adb.current_supply);
+
+  // fill_block_template picks up the second emit tx from the pool
+  // block validation fails because 98 + 8 = 106 > total_max (100)
+  // the tx is blacklisted, stays in the pool and is not selected again
+  CHECK_AND_ASSERT_MES(mine_next_pow_block_in_playtime(m_accounts[MINER_ACC_IDX].get_public_address(), c), false, "");
+  CHECK_AND_ASSERT_MES(c.get_pool_transactions_count() == 1, false, "Pool should have 1 tx (blacklisted, not removed): " << c.get_pool_transactions_count());
+
+  CHECK_AND_ASSERT_MES(c.get_blockchain_storage().get_asset_info(asset_id, registered_adb), false, "get_asset_info failed");
+  CHECK_AND_ASSERT_EQ(registered_adb.current_supply, initial_supply + 8);
+  LOG_PRINT_GREEN_L0("After second block: current_supply=" << registered_adb.current_supply << " (second emit blacklisted, stays in pool)");
+
+  CHECK_AND_ASSERT_MES(mine_next_pow_block_in_playtime(m_accounts[MINER_ACC_IDX].get_public_address(), c), false, "");
+  CHECK_AND_ASSERT_MES(c.get_pool_transactions_count() == 1, false, "Pool should still have 1 blacklisted tx: " << c.get_pool_transactions_count());
+
+  CHECK_AND_ASSERT_MES(c.get_blockchain_storage().get_asset_info(asset_id, registered_adb), false, "get_asset_info failed");
+  CHECK_AND_ASSERT_EQ(registered_adb.current_supply, initial_supply + 8);
+  LOG_PRINT_GREEN_L0("After third block: current_supply=" << registered_adb.current_supply << " (unchanged, blacklisted tx ignored)");
+
+  return true;
+}
+
+//------------------------------------------------------------------------------
+
+asset_emit_exceeds_max_supply::asset_emit_exceeds_max_supply()
+{
+  REGISTER_CALLBACK_METHOD(asset_emit_exceeds_max_supply, c1);
+}
+
+bool asset_emit_exceeds_max_supply::generate(std::vector<test_event_entry>& events) const
+{
+  uint64_t ts = test_core_time::get_time();
+  m_accounts.resize(TOTAL_ACCS_COUNT);
+  account_base& miner_acc = m_accounts[MINER_ACC_IDX]; miner_acc.generate(); miner_acc.set_createtime(ts);
+  account_base& alice_acc = m_accounts[ALICE_ACC_IDX]; alice_acc.generate(); alice_acc.set_createtime(ts);
+
+  MAKE_GENESIS_BLOCK(events, blk_0, miner_acc, ts);
+  std::vector<tx_destination_entry> destinations;
+  destinations.emplace_back(MK_TEST_COINS(1), alice_acc.get_public_address());
+  destinations.emplace_back(MK_TEST_COINS(1), alice_acc.get_public_address());
+  CHECK_AND_ASSERT_MES(replace_coinbase_in_genesis_block(destinations, generator, events, blk_0), false, "");
+
+  DO_CALLBACK(events, "configure_core");
+  REWIND_BLOCKS_N_WITH_TIME(events, blk_0r, blk_0, miner_acc, CURRENCY_MINED_MONEY_UNLOCK_WINDOW + 3);
+
+  DO_CALLBACK(events, "c1");
+
+  return true;
+}
+
+bool asset_emit_exceeds_max_supply::c1(currency::core& c, size_t ev_index, const std::vector<test_event_entry>& events)
+{
+  std::shared_ptr<tools::wallet2> miner_wlt = init_playtime_test_wallet(events, c, MINER_ACC_IDX);
+  miner_wlt->refresh();
+
+  asset_descriptor_base adb{};
+  adb.decimal_point = 0;
+  adb.total_max_supply = 100;
+  adb.full_name = "TestAsset";
+  adb.ticker = "TEST";
+
+  uint64_t initial_supply = 90;
+
+  // create asset with initial_supply=90, total_max_supply=100
+  std::vector<tx_destination_entry> destinations;
+  destinations.emplace_back(initial_supply, m_accounts[MINER_ACC_IDX].get_public_address(), null_pkey);
+  finalized_tx ft{};
+  crypto::public_key asset_id{};
+  miner_wlt->deploy_new_asset(adb, destinations, ft, asset_id);
+
+  CHECK_AND_ASSERT_MES(c.get_pool_transactions_count() == 1, false, "Unexpected pool count: " << c.get_pool_transactions_count());
+  CHECK_AND_ASSERT_MES(mine_next_pow_block_in_playtime(m_accounts[MINER_ACC_IDX].get_public_address(), c), false, "");
+  CHECK_AND_ASSERT_MES(c.get_pool_transactions_count() == 0, false, "Pool should be empty after deploy block");
+
+  size_t blocks_fetched = 0;
+  miner_wlt->refresh(blocks_fetched);
+
+  asset_descriptor_base registered_adb{};
+  CHECK_AND_ASSERT_MES(c.get_blockchain_storage().get_asset_info(asset_id, registered_adb), false, "get_asset_info failed");
+  CHECK_AND_ASSERT_EQ(registered_adb.current_supply, initial_supply);
+  LOG_PRINT_GREEN_L0("Asset deployed: current_supply=" << registered_adb.current_supply << ", total_max_supply=" << registered_adb.total_max_supply);
+
+  uint64_t overflow_amount = 20;
+  destinations.clear();
+  destinations.emplace_back(overflow_amount, m_accounts[MINER_ACC_IDX].get_public_address(), null_pkey);
+  ft = finalized_tx{};
+
+  bool got_expected_exception = false;
+  try
+  {
+    miner_wlt->emit_asset(asset_id, destinations, ft);
+  }
+  catch (const tools::error::tx_rejected&)
+  {
+    got_expected_exception = true;
+  }
+
+  CHECK_AND_ASSERT_MES(got_expected_exception, false, "Expected tx_rejected exception was not thrown");
+  CHECK_AND_ASSERT_MES(c.get_pool_transactions_count() == 0, false, "Pool must be empty after rejected emit, got: " << c.get_pool_transactions_count());
+
+  CHECK_AND_ASSERT_MES(c.get_blockchain_storage().get_asset_info(asset_id, registered_adb), false, "get_asset_info failed");
+  CHECK_AND_ASSERT_EQ(registered_adb.current_supply, initial_supply);
+  LOG_PRINT_GREEN_L0("Emit of " << overflow_amount << " correctly rejected; current_supply unchanged at " << registered_adb.current_supply);
+
+  return true;
+}
