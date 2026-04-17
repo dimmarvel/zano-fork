@@ -1828,6 +1828,16 @@ bool hard_fork_6_coinbase_size_rules::generate(std::vector<test_event_entry>& ev
     events.push_back(blk_bad);
   }
 
+  { // №2b: coinbase size == CURRENCY_COINBASE_BLOB_RESERVED_SIZE_HF6 + 1 - rejected, one over
+    block blk_bad{};
+    bool r = build_specific_cumnul_block(blk_hf6_ancestor, seed_ecbs(0), pad_coinbase_to(CURRENCY_COINBASE_BLOB_RESERVED_SIZE_HF6 + 1), blk_bad);
+    CHECK_AND_ASSERT_MES(r, false, "HF6 boundary (==limit+1) block construction failed");
+    CHECK_AND_ASSERT_MES(get_object_blobsize(blk_bad.miner_tx) == CURRENCY_COINBASE_BLOB_RESERVED_SIZE_HF6 + 1, false,
+      "HF6 boundary+1: coinbase size did not converge to exactly CURRENCY_COINBASE_BLOB_RESERVED_SIZE_HF6 + 1");
+    DO_CALLBACK(events, "mark_invalid_block");
+    events.push_back(blk_bad);
+  }
+
   { // №3
     block blk_bad{};
     bool r = build_specific_cumnul_block(blk_hf6_ancestor, {}, {}, blk_bad); // no ecbs seeded - none extra
@@ -1844,9 +1854,18 @@ bool hard_fork_6_coinbase_size_rules::generate(std::vector<test_event_entry>& ev
     events.push_back(blk_bad);
   }
 
+  block blk_hf6_boundary_ok{};
+  { // №2a: coinbase size == CURRENCY_COINBASE_BLOB_RESERVED_SIZE_HF6 - accepted boundary inclusive
+    bool r = build_specific_cumnul_block(blk_hf6_ancestor, seed_ecbs(0), pad_coinbase_to(CURRENCY_COINBASE_BLOB_RESERVED_SIZE_HF6), blk_hf6_boundary_ok);
+    CHECK_AND_ASSERT_MES(r, false, "HF6 boundary (==limit) block construction failed");
+    CHECK_AND_ASSERT_MES(get_object_blobsize(blk_hf6_boundary_ok.miner_tx) == CURRENCY_COINBASE_BLOB_RESERVED_SIZE_HF6, false,
+      "HF6 boundary: coinbase size did not converge to exactly CURRENCY_COINBASE_BLOB_RESERVED_SIZE_HF6");
+    events.push_back(blk_hf6_boundary_ok);
+  }
+
   { // №5
     block blk_ok{};
-    bool r = build_specific_cumnul_block(blk_hf6_ancestor, seed_ecbs(0), {}, blk_ok);
+    bool r = build_specific_cumnul_block(blk_hf6_boundary_ok, seed_ecbs(0), {}, blk_ok);
     CHECK_AND_ASSERT_MES(r, false, "HF6 sanity block construction failed");
     CHECK_AND_ASSERT_MES(get_object_blobsize(blk_ok.miner_tx) <= CURRENCY_COINBASE_BLOB_RESERVED_SIZE_HF6, false, "HF6 unexpectedly big coinbase");
     events.push_back(blk_ok);
