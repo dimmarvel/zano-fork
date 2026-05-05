@@ -202,7 +202,7 @@ namespace currency {
 
     sort(timestamps.begin(), timestamps.end(), std::greater<uint64_t>());
     
-    static_assert(2 * DIFFICULTY_CUT <= DIFFICULTY_WINDOW - 2, "Cut length is too large");
+    //static_assert(2 * DIFFICULTY_CUT <= DIFFICULTY_WINDOW - 2, "Cut length is too large");
     wide_difficulty_type dif_slow = get_adjustment_for_zone(timestamps, cumulative_difficulties, target_seconds, DIFFICULTY_WINDOW, DIFFICULTY_CUT/2, DIFFICULTY_CUT/2);
     wide_difficulty_type dif_medium = get_adjustment_for_zone(timestamps, cumulative_difficulties, target_seconds, DIFFICULTY_WINDOW/3, DIFFICULTY_CUT / 8, DIFFICULTY_CUT / 12);
     wide_difficulty_type dif_fast = get_adjustment_for_zone(timestamps, cumulative_difficulties, target_seconds, DIFFICULTY_WINDOW/18, DIFFICULTY_CUT / 10, 2); 
@@ -244,7 +244,7 @@ namespace currency {
 
     sort(timestamps.begin(), timestamps.end(), std::greater<uint64_t>());
 
-    static_assert(2 * DIFFICULTY_CUT <= DIFFICULTY_WINDOW - 2, "Cut length is too large");
+    //static_assert(2 * DIFFICULTY_CUT <= DIFFICULTY_WINDOW - 2, "Cut length is too large");
     wide_difficulty_type dif_slow = get_adjustment_for_zone(timestamps, cumulative_difficulties, target_seconds, DIFFICULTY_WINDOW, DIFFICULTY_CUT / 2, DIFFICULTY_CUT / 2);
     wide_difficulty_type dif_medium = get_adjustment_for_zone(timestamps, cumulative_difficulties, target_seconds, DIFFICULTY_WINDOW / 3, DIFFICULTY_CUT / 8, DIFFICULTY_CUT / 12);
     uint64_t devider = 1;

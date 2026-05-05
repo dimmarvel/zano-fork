@@ -46,9 +46,9 @@
 #define CURRENT_BLOCK_MAJOR_VERSION                     3
 
 #define CURRENCY_DEFAULT_DECOY_SET_SIZE                 10
-#define CURRENCY_HF4_MANDATORY_DECOY_SET_SIZE           15
+#define CURRENCY_HF4_MANDATORY_DECOY_SET_SIZE           0
 #define CURRENCY_HF4_MANDATORY_MIN_COINAGE              10
-#define CURRENCY_PRE_HARDFORK_TX_FREEZE_PERIOD          60 // number of blocks before the hardfork activation when no new txs are accepted (effective from HF5)
+#define CURRENCY_PRE_HARDFORK_TX_FREEZE_PERIOD          5 // number of blocks before the hardfork activation when no new txs are accepted (effective from HF5)
 #define CURRENCY_HF6_INTRINSIC_PAYMENT_ID_SIZE          8 // size of intrinsic (per-output) payment id
 
 #define CURRENT_BLOCK_MINOR_VERSION                     0
@@ -83,10 +83,10 @@
 #define CURRENCY_TX_OUTS_RND_SPLIT_DIGITS_TO_KEEP       3
 
 #define DIFFICULTY_POW_STARTER                          1
-#define DIFFICULTY_POS_TARGET                           120 // seconds
-#define DIFFICULTY_POW_TARGET                           120 // seconds
+#define DIFFICULTY_POS_TARGET                           3 // seconds
+#define DIFFICULTY_POW_TARGET                           3 // seconds
 #define DIFFICULTY_TOTAL_TARGET                         ((DIFFICULTY_POS_TARGET + DIFFICULTY_POW_TARGET) / 4)
-#define DIFFICULTY_WINDOW                               720 // blocks
+#define DIFFICULTY_WINDOW                               30 // blocks
 #define DIFFICULTY_LAG                                  15  // !!!
 #define DIFFICULTY_CUT                                  60  // timestamps to cut after sorting
 #define DIFFICULTY_BLOCKS_COUNT                         (DIFFICULTY_WINDOW + DIFFICULTY_LAG)
@@ -306,13 +306,13 @@
 #define ZANO_HARDFORK_02_AFTER_HEIGHT                   0
 #define ZANO_HARDFORK_03_AFTER_HEIGHT                   0
 
-#define ZANO_HARDFORK_04_AFTER_HEIGHT                   800
+#define ZANO_HARDFORK_04_AFTER_HEIGHT                   10
 #define ZANO_HARDFORK_04_TIMESTAMP_ACTUAL               1776839453ull // 2026-02-22 06:30:53 UTC
 
-#define ZANO_HARDFORK_05_AFTER_HEIGHT                   801
+#define ZANO_HARDFORK_05_AFTER_HEIGHT                   11
 #define ZANO_HARDFORK_05_MIN_BUILD_VER                  472
 
-#define ZANO_HARDFORK_06_AFTER_HEIGHT                   1100
+#define ZANO_HARDFORK_06_AFTER_HEIGHT                   50
 #define ZANO_HARDFORK_06_MIN_BUILD_VER                  472
 #endif
 
