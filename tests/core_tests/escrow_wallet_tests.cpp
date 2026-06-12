@@ -2205,11 +2205,17 @@ bool escrow_incorrect_cancel_proposal::check_incorrect_cancel_proposal_internal(
   const std::string param = boost::get<callback_entry>(events[ev_index]).callback_params;
   if (param == "invalid unlock time") // from custom_config_masks
   {
-    // accept tx with unlock_time, but we now dont handling txs with unlock_time in the wallet
-    alice_balance_expected += TESTS_DEFAULT_FEE;
+    // the cancel request tx carries unlock_time, so the wallet ignores it except for its inputs:
+    // inputs are marked as spent (their key images are burnt at the consensus level), while the change output is not credited;
+    // thus Alice's balance must not exceed the normal full-processing expectation (it would, if the spend was not detected)
+    CHECK_AND_ASSERT_MES(alice_balance <= alice_balance_expected, false, "Alice has incorrect balance: " << alice_balance
+      << ", expected not greater than: " << alice_balance_expected << " (tx with unlock_time: inputs spent, outputs ignored)");
   }
-  CHECK_AND_ASSERT_MES(alice_balance == alice_balance_expected, false, "Alice has incorrect balance: " << alice_balance << ", expected: " << alice_balance_expected);
-  
+  else
+  {
+    CHECK_AND_ASSERT_MES(alice_balance == alice_balance_expected, false, "Alice has incorrect balance: " << alice_balance << ", expected: " << alice_balance_expected);
+  }
+
   std::shared_ptr<tools::wallet2> bob_wlt = init_playtime_test_wallet(events, c, BOB_ACC_IDX);
   bob_wlt->refresh();
   uint64_t bob_balance = bob_wlt->balance();
