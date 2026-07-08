@@ -53,7 +53,7 @@ jobs:
       DEPS_DIR: ${{ github.workspace }}/_deps
     steps:
       - name: Checkout (with submodules)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
           # full history: src/version.cmake and libmdbx count revisions via git
@@ -61,7 +61,7 @@ jobs:
 
       - name: Cache Boost & OpenSSL
         id: deps-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ env.DEPS_DIR }}
           key: deps-${{ matrix.runner }}-${{ matrix.arch }}-boost${{ env.BOOST_VERSION }}-openssl${{ env.OPENSSL_VERSION }}-min${{ matrix.osx_min }}-v1
@@ -147,7 +147,7 @@ jobs:
           tar -cjf "$pkg.tar.bz2" "$pkg"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: zano-macos-${{ matrix.arch }}-cli${{ inputs.testnet == true && '-testnet' || '' }}
           # wildcard on purpose: the file name contains [commit] brackets,
@@ -162,7 +162,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Download both artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: zano-macos-*-cli*
           merge-multiple: true
@@ -187,7 +187,7 @@ jobs:
           tar -cjf "$pkg.tar.bz2" "$pkg"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: zano-macos-universal-cli${{ inputs.testnet == true && '-testnet' || '' }}
           path: zano-macos-universal-*.tar.bz2
