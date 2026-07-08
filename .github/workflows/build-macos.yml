@@ -1,0 +1,194 @@
+name: macOS build
+
+# Builds CLI binaries (zanod, simplewallet, connectivity_tool) natively for
+# x86_64 (Intel) and arm64 (Apple Silicon), plus glues them into universal
+# binaries with lipo. GUI (Qt) build is intentionally not here yet: Qt 5.15
+# QtWebEngine cannot be built for macOS arm64; native ARM GUI requires
+# migration to Qt 6.2+ (see discussion in the PR/issue that added this file).
+
+on:
+  workflow_dispatch:
+    inputs:
+      testnet:
+        description: 'Build testnet binaries (-D TESTNET=TRUE)'
+        type: boolean
+        default: false
+  push:
+    branches: [release, master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BOOST_VERSION: 1.84.0
+  BOOST_SHA256: cc4b893acf645c9d4b698e9a0f08ca8846aa5d6c68275c14c3e7949c24109454
+  OPENSSL_VERSION: 1.1.1w
+  OPENSSL_SHA256: cf3098950cb4d853ad95c0841f1f9c6d3dc102dccfcacd521d93925208b76ac8
+
+jobs:
+  build-cli:
+    name: CLI ${{ matrix.arch }}${{ inputs.testnet == true && ' (testnet)' || '' }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Free standard Intel runner (4 vCPU / 14 GB). GitHub keeps x86_64
+          # macOS runners until ~Aug 2027; after that switch this leg to an
+          # arm64 runner with CMAKE_OSX_ARCHITECTURES=x86_64 cross-build.
+          - arch: x64
+            runner: macos-15-intel
+            cmake_arch: x86_64
+            osx_min: '10.15'
+            openssl_target: darwin64-x86_64-cc
+          # Free standard Apple Silicon runner (3 vCPU / 7 GB).
+          - arch: arm64
+            runner: macos-15
+            cmake_arch: arm64
+            osx_min: '11.0'
+            openssl_target: darwin64-arm64-cc
+    env:
+      DEPS_DIR: ${{ github.workspace }}/_deps
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          # full history: src/version.cmake and libmdbx count revisions via git
+          fetch-depth: 0
+
+      - name: Cache Boost & OpenSSL
+        id: deps-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.DEPS_DIR }}
+          key: deps-${{ matrix.runner }}-${{ matrix.arch }}-boost${{ env.BOOST_VERSION }}-openssl${{ env.OPENSSL_VERSION }}-min${{ matrix.osx_min }}-v1
+
+      - name: Build OpenSSL (static)
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$DEPS_DIR" && cd "$DEPS_DIR"
+          curl -fL -o "openssl-${OPENSSL_VERSION}.tar.gz" \
+            "https://github.com/openssl/openssl/releases/download/OpenSSL_$(echo "$OPENSSL_VERSION" | tr . _)/openssl-${OPENSSL_VERSION}.tar.gz" \
+          || curl -fL -o "openssl-${OPENSSL_VERSION}.tar.gz" \
+            "https://www.openssl.org/source/old/1.1.1/openssl-${OPENSSL_VERSION}.tar.gz"
+          echo "${OPENSSL_SHA256}  openssl-${OPENSSL_VERSION}.tar.gz" | shasum -a 256 -c
+          tar xzf "openssl-${OPENSSL_VERSION}.tar.gz"
+          cd "openssl-${OPENSSL_VERSION}"
+          ./Configure ${{ matrix.openssl_target }} no-shared no-tests \
+            --prefix="$DEPS_DIR/openssl" --openssldir="$DEPS_DIR/openssl" \
+            -mmacosx-version-min=${{ matrix.osx_min }}
+          make -j"$(sysctl -n hw.ncpu)"
+          make install_sw
+          cd "$DEPS_DIR" && rm -rf "openssl-${OPENSSL_VERSION}" "openssl-${OPENSSL_VERSION}.tar.gz"
+
+      - name: Build Boost (static)
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        run: |
+          boost_und=$(echo "$BOOST_VERSION" | tr . _)
+          mkdir -p "$DEPS_DIR" && cd "$DEPS_DIR"
+          curl -fL -O "https://archives.boost.io/release/${BOOST_VERSION}/source/boost_${boost_und}.tar.bz2"
+          echo "${BOOST_SHA256}  boost_${boost_und}.tar.bz2" | shasum -a 256 -c
+          tar xjf "boost_${boost_und}.tar.bz2"
+          cd "boost_${boost_und}"
+          ./bootstrap.sh --with-libraries=system,filesystem,thread,date_time,chrono,regex,serialization,atomic,program_options,locale,timer,log
+          # static libs make the artifacts self-contained (no dylib fixup dance
+          # from utils/macosx_fix_boost_libs_path.sh); ICU off so boost.locale
+          # uses iconv from the macOS SDK (final link adds -liconv, see below)
+          ./b2 -j"$(sysctl -n hw.ncpu)" \
+            link=static runtime-link=shared threading=multi variant=release \
+            boost.locale.icu=off \
+            cxxflags="-mmacosx-version-min=${{ matrix.osx_min }}" \
+            linkflags="-mmacosx-version-min=${{ matrix.osx_min }}" \
+            install --prefix="$DEPS_DIR/boost"
+          cd "$DEPS_DIR" && rm -rf "boost_${boost_und}" "boost_${boost_und}.tar.bz2"
+
+      - name: Configure (CMake)
+        run: |
+          testnet_def=""
+          if [ "${{ inputs.testnet }}" = "true" ]; then testnet_def="-D TESTNET=TRUE"; fi
+          mkdir -p build && cd build
+          # CMAKE_POLICY_VERSION_MINIMUM: CMake 4.x on the runners refuses
+          # cmake_minimum_required(<3.5) in vendored subprojects (contrib/zlib)
+          # -liconv: needed because boost_locale is linked statically
+          cmake $testnet_def \
+            -D CMAKE_BUILD_TYPE=Release \
+            -D CMAKE_OSX_ARCHITECTURES=${{ matrix.cmake_arch }} \
+            -D CMAKE_OSX_DEPLOYMENT_TARGET=${{ matrix.osx_min }} \
+            -D CMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -D CMAKE_EXE_LINKER_FLAGS="-liconv" \
+            -D BOOST_ROOT="$DEPS_DIR/boost" \
+            -D OPENSSL_ROOT_DIR="$DEPS_DIR/openssl" \
+            ..
+
+      - name: Build (zanod, simplewallet, connectivity_tool)
+        run: cd build && make -j"$(sysctl -n hw.ncpu)" daemon simplewallet connectivity_tool
+
+      - name: Smoke test
+        run: |
+          cd build/src
+          file zanod simplewallet connectivity_tool
+          lipo -archs zanod
+          ./zanod --version
+          ./simplewallet --version
+          ./connectivity_tool --version
+
+      - name: Package
+        run: |
+          cd build/src
+          version_str=$(./zanod --version | awk '/^Zano/ { print $2; exit }')
+          suffix=""
+          if [ "${{ inputs.testnet }}" = "true" ]; then suffix="-testnet"; fi
+          pkg="zano-macos-${{ matrix.arch }}-cli${suffix}-${version_str}"
+          mkdir "$pkg"
+          cp zanod simplewallet connectivity_tool "$pkg/"
+          tar -cjf "$pkg.tar.bz2" "$pkg"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zano-macos-${{ matrix.arch }}-cli${{ inputs.testnet == true && '-testnet' || '' }}
+          # wildcard on purpose: the file name contains [commit] brackets,
+          # which upload-artifact would otherwise treat as a glob char class
+          path: build/src/zano-macos-*.tar.bz2
+          if-no-files-found: error
+
+  make-universal:
+    name: Universal binaries (lipo)
+    needs: build-cli
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Download both artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: zano-macos-*-cli*
+          merge-multiple: true
+          path: artifacts
+
+      - name: Glue with lipo
+        run: |
+          shopt -s nullglob
+          x64_tar=(artifacts/zano-macos-x64-cli*.tar.bz2)
+          arm_tar=(artifacts/zano-macos-arm64-cli*.tar.bz2)
+          mkdir x64 arm64
+          tar -xjf "${x64_tar[0]}" --strip-components=1 -C x64
+          tar -xjf "${arm_tar[0]}" --strip-components=1 -C arm64
+          base=$(basename "${x64_tar[0]}" .tar.bz2)
+          pkg="zano-macos-universal-${base#zano-macos-x64-}"
+          mkdir "$pkg"
+          for b in zanod simplewallet connectivity_tool; do
+            lipo -create -output "$pkg/$b" "x64/$b" "arm64/$b"
+            lipo -archs "$pkg/$b"
+          done
+          "./$pkg/zanod" --version
+          tar -cjf "$pkg.tar.bz2" "$pkg"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zano-macos-universal-cli${{ inputs.testnet == true && '-testnet' || '' }}
+          path: zano-macos-universal-*.tar.bz2
+          if-no-files-found: error
