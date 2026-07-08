@@ -226,7 +226,11 @@ if(BUILD_GUI)
   # сlose QRC
   file(APPEND "${GUI_QRC}" "  </qresource>\n</RCC>\n")
 
-  qt5_add_resources(ZANO_RESOURCES "${GUI_QRC}")
+  if(QT_VERSION_MAJOR GREATER_EQUAL 6)
+    qt6_add_resources(ZANO_RESOURCES "${GUI_QRC}")
+  else()
+    qt5_add_resources(ZANO_RESOURCES "${GUI_QRC}")
+  endif()
   target_sources(Zano PRIVATE ${ZANO_RESOURCES})
   message(STATUS "[HTML-embed] Embedded ${HTML_COUNT} files into target 'Zano' via ${GUI_QRC}")
   ##### end qt resources ######
@@ -235,9 +239,9 @@ if(BUILD_GUI)
   ENABLE_SHARED_PCH_EXECUTABLE(Zano)
 	  
   #QT5_USE_MODULES(Zano WebEngineWidgets WebChannel)
-  find_package(Qt5PrintSupport REQUIRED)
+  find_package(Qt${QT_VERSION_MAJOR}PrintSupport REQUIRED)
 
-  target_link_libraries(Zano wallet rpc currency_core crypto common zlibstatic ethash Qt5::WebChannel Qt5::WebEngineWidgets Qt5::PrintSupport ${CMAKE_THREAD_LIBS_INIT} ${Boost_LIBRARIES} OpenSSL::SSL OpenSSL::Crypto)
+  target_link_libraries(Zano wallet rpc currency_core crypto common zlibstatic ethash Qt${QT_VERSION_MAJOR}::WebChannel Qt${QT_VERSION_MAJOR}::WebEngineWidgets Qt${QT_VERSION_MAJOR}::PrintSupport ${CMAKE_THREAD_LIBS_INIT} ${Boost_LIBRARIES} OpenSSL::SSL OpenSSL::Crypto)
   if (UNIX AND NOT APPLE)
 	target_link_libraries(Zano rt)
   endif()
