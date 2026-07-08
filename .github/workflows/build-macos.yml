@@ -1,11 +1,5 @@
 name: macOS build
 
-# Builds CLI binaries (zanod, simplewallet, connectivity_tool) natively for
-# x86_64 (Intel) and arm64 (Apple Silicon), plus glues them into universal
-# binaries with lipo. GUI (Qt) build is intentionally not here yet: Qt 5.15
-# QtWebEngine cannot be built for macOS arm64; native ARM GUI requires
-# migration to Qt 6.2+ (see discussion in the PR/issue that added this file).
-
 on:
   workflow_dispatch:
     inputs:
@@ -35,15 +29,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Free standard Intel runner (4 vCPU / 14 GB). GitHub keeps x86_64
-          # macOS runners until ~Aug 2027; after that switch this leg to an
-          # arm64 runner with CMAKE_OSX_ARCHITECTURES=x86_64 cross-build.
           - arch: x64
             runner: macos-15-intel
             cmake_arch: x86_64
             osx_min: '10.15'
             openssl_target: darwin64-x86_64-cc
-          # Free standard Apple Silicon runner (3 vCPU / 7 GB).
+          # Free standard Apple Silicon runner (3cpu / 7gb)
           - arch: arm64
             runner: macos-15
             cmake_arch: arm64
@@ -126,6 +117,47 @@ jobs:
       - name: Build (zanod, simplewallet, connectivity_tool)
         run: cd build && make -j"$(sysctl -n hw.ncpu)" daemon simplewallet connectivity_tool
 
+      - name: Check code signing secrets
+        id: signcheck
+        env:
+          CERT: ${{ secrets.MACOS_SIGN_CERT_P12 }}
+        run: |
+          if [ -n "$CERT" ]; then
+            echo "sign=true" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Code signing::ENABLED — MACOS_SIGN_CERT_P12 secret found, binaries will be signed"
+          else
+            echo "sign=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Code signing::SKIPPED — no MACOS_SIGN_CERT_P12 secret, producing unsigned build"
+          fi
+
+      - name: Sign binaries (Developer ID)
+        if: steps.signcheck.outputs.sign == 'true'
+        env:
+          CERT_P12_B64: ${{ secrets.MACOS_SIGN_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_SIGN_CERT_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/sign.keychain-db"
+          kc_pass=$(uuidgen)
+          security create-keychain -p "$kc_pass" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$kc_pass" "$keychain"
+          echo "$CERT_P12_B64" | base64 -d > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_pass" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" login.keychain
+          identity=$(security find-identity -v -p codesigning "$keychain" | awk -F'"' '/Developer ID Application/ { print $2; exit }')
+          if [ -z "$identity" ]; then
+            echo "::error::No 'Developer ID Application' identity found in the imported .p12"
+            exit 1
+          fi
+          echo "Signing with identity: $identity"
+          cd build/src
+          for b in zanod simplewallet connectivity_tool; do
+            codesign --force --options runtime --timestamp --keychain "$keychain" --sign "$identity" "$b"
+            codesign -dv "$b" 2>&1 | head -3
+          done
+
       - name: Smoke test
         run: |
           cd build/src
@@ -150,8 +182,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: zano-macos-${{ matrix.arch }}-cli${{ inputs.testnet == true && '-testnet' || '' }}
-          # wildcard on purpose: the file name contains [commit] brackets,
-          # which upload-artifact would otherwise treat as a glob char class
+          # wildcard on purpose: the file name contains [commit] brackets, which upload artifact would otherwise treat as a glob char class
           path: build/src/zano-macos-*.tar.bz2
           if-no-files-found: error
 
@@ -183,8 +214,52 @@ jobs:
             lipo -create -output "$pkg/$b" "x64/$b" "arm64/$b"
             lipo -archs "$pkg/$b"
           done
-          "./$pkg/zanod" --version
-          tar -cjf "$pkg.tar.bz2" "$pkg"
+          echo "PKG=$pkg" >> "$GITHUB_ENV"
+
+      - name: Check code signing secrets
+        id: signcheck
+        env:
+          CERT: ${{ secrets.MACOS_SIGN_CERT_P12 }}
+        run: |
+          if [ -n "$CERT" ]; then
+            echo "sign=true" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Code signing::ENABLED — universal binaries will be re-signed"
+          else
+            echo "sign=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Code signing::SKIPPED — no MACOS_SIGN_CERT_P12 secret, universal binaries stay unsigned"
+          fi
+
+      - name: Sign universal binaries (Developer ID)
+        if: steps.signcheck.outputs.sign == 'true'
+        env:
+          CERT_P12_B64: ${{ secrets.MACOS_SIGN_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_SIGN_CERT_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/sign.keychain-db"
+          kc_pass=$(uuidgen)
+          security create-keychain -p "$kc_pass" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$kc_pass" "$keychain"
+          echo "$CERT_P12_B64" | base64 -d > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_pass" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" login.keychain
+          identity=$(security find-identity -v -p codesigning "$keychain" | awk -F'"' '/Developer ID Application/ { print $2; exit }')
+          if [ -z "$identity" ]; then
+            echo "::error::No 'Developer ID Application' identity found in the imported .p12"
+            exit 1
+          fi
+          echo "Signing with identity: $identity"
+          for b in zanod simplewallet connectivity_tool; do
+            codesign --force --options runtime --timestamp --keychain "$keychain" --sign "$identity" "$PKG/$b"
+            codesign -dv "$PKG/$b" 2>&1 | head -3
+          done
+
+      - name: Package universal
+        run: |
+          "./$PKG/zanod" --version
+          tar -cjf "$PKG.tar.bz2" "$PKG"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
