@@ -242,7 +242,12 @@ private:
   virtual bool set_options(const view::gui_options& opt);
   virtual bool update_tor_status(const view::current_action_status& opt);
   //--------- QAbstractNativeEventFilter ---------------------------
-  virtual bool nativeEventFilter(const QByteArray &eventType, void *message, long *result);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+  typedef qintptr native_event_result_t; // Qt 6 changed the result type from long* to qintptr*
+#else
+  typedef long native_event_result_t;
+#endif
+  virtual bool nativeEventFilter(const QByteArray &eventType, void *message, native_event_result_t *result);
   //----------------------------------------------
 
 
