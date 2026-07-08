@@ -14,7 +14,7 @@ on:
         type: boolean
         default: false
   push:
-    branches: [release, master]
+    branches: [release, release_fork, master]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
