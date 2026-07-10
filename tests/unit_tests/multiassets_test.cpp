@@ -578,6 +578,93 @@ TEST(multiassets, native_serialization_get_or_calculate_asset_id_public_burn)
   ASSERT_EQ(serialized_ado, reserialized_ado);
 }
 
+crypto::public_key pk_from_seed(uint8_t seed)
+{
+  crypto::public_key k{};
+  auto* p = reinterpret_cast<uint8_t*>(&k);
+  for (size_t i = 0; i < sizeof(k); ++i) p[i] = static_cast<uint8_t>(seed + i);
+  return k;
+}
+
+template<int N>
+struct asset_descriptor_operation_archive_wrapper
+{
+  currency::asset_descriptor_operation data;
+  template <class Archive>
+  void serialize(Archive& ar, const unsigned int /*version*/)
+  {
+    ar & data;
+  }
+};
+
+BOOST_CLASS_VERSION(asset_descriptor_operation_archive_wrapper<0>, 0)
+BOOST_CLASS_VERSION(asset_descriptor_operation_archive_wrapper<1>, 1)
+
+TEST(multiassets, assets_boost_serialize_v0)
+{
+  const int ver = 0;
+
+  currency::asset_descriptor_operation original{};
+  original.version = ver;
+  original.operation_type = ASSET_DESCRIPTOR_OPERATION_REGISTER;
+  original.opt_asset_id = pk_from_seed(0x24);
+
+  std::stringstream ss;
+
+  // serialize (v0)
+  {
+    asset_descriptor_operation_archive_wrapper<0> wrap{original};
+    boost::archive::binary_oarchive oa(ss);
+    oa << wrap;
+  }
+
+  // deserialize (v0)
+  currency::asset_descriptor_operation restored{};
+  {
+    asset_descriptor_operation_archive_wrapper<0> wrap{};
+    boost::archive::binary_iarchive ia(ss);
+    ia >> wrap;
+    restored = wrap.data;
+  }
+
+  EXPECT_EQ(restored.version, original.version) << "ver==0: current version not set";
+  EXPECT_EQ(restored.operation_type, original.operation_type) << "ver==0: operation_type mismatch";
+  ASSERT_TRUE(restored.opt_asset_id.has_value()) << "ver==0: opt_asset_id missing";
+  EXPECT_EQ(*restored.opt_asset_id, *original.opt_asset_id);
+}
+
+TEST(multiassets, assets_boost_serialize_v1)
+{
+  const int ver = 1;
+
+  currency::asset_descriptor_operation original{};
+  original.version = ver;
+  original.operation_type = ASSET_DESCRIPTOR_OPERATION_EMIT;
+  original.opt_asset_id = pk_from_seed(0x42);
+
+  std::stringstream ss;
+
+  // serialize (v1)
+  {
+    asset_descriptor_operation_archive_wrapper<1> wrap{original};
+    boost::archive::binary_oarchive oa(ss);
+    oa << wrap;
+  }
+
+  // deserialize (v1)
+  currency::asset_descriptor_operation restored{};
+  {
+    asset_descriptor_operation_archive_wrapper<1> wrap{};
+    boost::archive::binary_iarchive ia(ss);
+    ia >> wrap;
+    restored = wrap.data;
+  }
+
+  EXPECT_EQ(restored.version, original.version) << "ver==1: current version not set";
+  EXPECT_EQ(restored.operation_type, original.operation_type) << "ver==1: operation_type mismatch";
+  ASSERT_TRUE(restored.opt_asset_id.has_value()) << "ver==1: opt_asset_id missing";
+  EXPECT_EQ(*restored.opt_asset_id, *original.opt_asset_id);
+}
 
 #if 0
 TEST(multiassets, boost_serialization_get_or_calculate_asset_id_undefined)
