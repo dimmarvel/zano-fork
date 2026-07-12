@@ -235,7 +235,6 @@ if(BUILD_GUI)
   message(STATUS "[HTML-embed] Embedded ${HTML_COUNT} files into target 'Zano' via ${GUI_QRC}")
   ##### end qt resources ######
 
-  ENABLE_SHARED_PCH(Zano QTDAEMON)
   ENABLE_SHARED_PCH_EXECUTABLE(Zano)
 	  
   #QT5_USE_MODULES(Zano WebEngineWidgets WebChannel)
