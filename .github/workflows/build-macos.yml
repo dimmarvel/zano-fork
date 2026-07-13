@@ -7,12 +7,6 @@ on:
         description: 'Build testnet binaries (-D TESTNET=TRUE)'
         type: boolean
         default: false
-  push:
-    branches: [release, release_fork, release_fork_qt, master]
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 env:
   BOOST_VERSION: 1.84.0
@@ -34,7 +28,6 @@ jobs:
             cmake_arch: x86_64
             osx_min: '10.15'
             openssl_target: darwin64-x86_64-cc
-          # Free standard Apple Silicon runner (3cpu / 7gb)
           - arch: arm64
             runner: macos-15
             cmake_arch: arm64
@@ -85,9 +78,7 @@ jobs:
           tar xjf "boost_${boost_und}.tar.bz2"
           cd "boost_${boost_und}"
           ./bootstrap.sh --with-libraries=system,filesystem,thread,date_time,chrono,regex,serialization,atomic,program_options,locale,timer,log
-          # static libs make the artifacts self-contained (no dylib fixup dance
-          # from utils/macosx_fix_boost_libs_path.sh); ICU off so boost.locale
-          # uses iconv from the macOS SDK (final link adds -liconv, see below)
+          # static libs; boost.locale uses iconv, linked via -liconv
           ./b2 -j"$(sysctl -n hw.ncpu)" \
             link=static runtime-link=shared threading=multi variant=release \
             boost.locale.icu=off \
@@ -101,9 +92,8 @@ jobs:
           testnet_def=""
           if [ "${{ inputs.testnet }}" = "true" ]; then testnet_def="-D TESTNET=TRUE"; fi
           mkdir -p build && cd build
-          # CMAKE_POLICY_VERSION_MINIMUM: CMake 4.x on the runners refuses
-          # cmake_minimum_required(<3.5) in vendored subprojects (contrib/zlib)
-          # -liconv: needed because boost_locale is linked statically
+          # CMAKE_POLICY_VERSION_MINIMUM=3.5: CMake 4.x vs old vendored subprojects
+          # -liconv: required by statically linked boost_locale
           cmake $testnet_def \
             -D CMAKE_BUILD_TYPE=Release \
             -D CMAKE_OSX_ARCHITECTURES=${{ matrix.cmake_arch }} \
@@ -124,10 +114,10 @@ jobs:
         run: |
           if [ -n "$CERT" ]; then
             echo "sign=true" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Code signing::ENABLED — MACOS_SIGN_CERT_P12 secret found, binaries will be signed"
+            echo "::notice title=Code signing::ENABLED -MACOS_SIGN_CERT_P12 secret found, binaries will be signed"
           else
             echo "sign=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Code signing::SKIPPED — no MACOS_SIGN_CERT_P12 secret, producing unsigned build"
+            echo "::notice title=Code signing::SKIPPED -no MACOS_SIGN_CERT_P12 secret, producing unsigned build"
           fi
 
       - name: Sign binaries (Developer ID)
@@ -182,7 +172,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: zano-macos-${{ matrix.arch }}-cli${{ inputs.testnet == true && '-testnet' || '' }}
-          # wildcard on purpose: the file name contains [commit] brackets, which upload artifact would otherwise treat as a glob char class
+          # file name contains [commit] brackets, so use a wildcard
           path: build/src/zano-macos-*.tar.bz2
           if-no-files-found: error
 
@@ -223,10 +213,10 @@ jobs:
         run: |
           if [ -n "$CERT" ]; then
             echo "sign=true" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Code signing::ENABLED — universal binaries will be re-signed"
+            echo "::notice title=Code signing::ENABLED -universal binaries will be re-signed"
           else
             echo "sign=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Code signing::SKIPPED — no MACOS_SIGN_CERT_P12 secret, universal binaries stay unsigned"
+            echo "::notice title=Code signing::SKIPPED -no MACOS_SIGN_CERT_P12 secret, universal binaries stay unsigned"
           fi
 
       - name: Sign universal binaries (Developer ID)
@@ -268,9 +258,9 @@ jobs:
           path: zano-macos-universal-*.tar.bz2
           if-no-files-found: error
 
-  # Full release-style GUI build
+  # Release-style GUI build (Zano.app packed into a dmg)
   build-gui-x64:
-    name: GUI x64 (Qt 5.15.2)${{ inputs.testnet == true && ' (testnet)' || '' }}
+    name: GUI x64 (Qt 6.8)${{ inputs.testnet == true && ' (testnet)' || '' }}
     runs-on: macos-15-intel
     timeout-minutes: 240
     env:
@@ -327,12 +317,12 @@ jobs:
             install --prefix="$DEPS_DIR/boost"
           cd "$DEPS_DIR" && rm -rf "boost_${boost_und}" "boost_${boost_und}.tar.bz2"
 
-      - name: Install Qt 5.15.2 (with WebEngine)
+      - name: Install Qt 6.8 (with WebEngine)
         uses: jurplel/install-qt-action@v4
         with:
-          version: '5.15.2'
+          version: '6.8.3'
           arch: clang_64
-          modules: qtwebengine
+          modules: 'qtwebengine qtwebchannel qtpositioning'
           cache: true
 
       - name: Configure (CMake, BUILD_GUI)
@@ -340,12 +330,13 @@ jobs:
           testnet_def=""
           if [ "${{ inputs.testnet }}" = "true" ]; then testnet_def="-D TESTNET=TRUE"; fi
           mkdir -p build && cd build
+          # deployment target 12.0: minimum supported by Qt 6.8
           cmake $testnet_def \
             -D CMAKE_BUILD_TYPE=Release \
             -D BUILD_GUI=TRUE \
             -D CMAKE_PREFIX_PATH="$QT_ROOT_DIR" \
             -D CMAKE_OSX_ARCHITECTURES=x86_64 \
-            -D CMAKE_OSX_DEPLOYMENT_TARGET=$OSX_MIN \
+            -D CMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
             -D CMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -D CMAKE_EXE_LINKER_FLAGS="-liconv" \
             -D BOOST_ROOT="$DEPS_DIR/boost" \
@@ -358,12 +349,11 @@ jobs:
       - name: Assemble Zano.app
         run: |
           cd build/src
-          # rename from the official script; no-op if already capitalized
+          # align the binary name with the bundle (no-op if already 'Zano')
           mv Zano.app/Contents/MacOS/zano Zano.app/Contents/MacOS/Zano || true
           cp zanod simplewallet Zano.app/Contents/MacOS/
           "$QT_ROOT_DIR/bin/macdeployqt" Zano.app
-          # html layout next to the binary (UI is also embedded via Qt
-          # resources, this mirrors the official package layout)
+          # ship html layout as in the official package
           rsync -a ../../src/gui/qt-daemon/layout/html Zano.app/Contents/MacOS --exclude less --exclude package.json --exclude gulpfile.js
           cp ../../src/gui/qt-daemon/app.icns Zano.app/Contents/Resources/
 
@@ -374,10 +364,10 @@ jobs:
         run: |
           if [ -n "$CERT" ]; then
             echo "sign=true" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Code signing::ENABLED — Zano.app will be signed with Developer ID"
+            echo "::notice title=Code signing::ENABLED -Zano.app will be signed with Developer ID"
           else
             echo "sign=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Code signing::SKIPPED — no MACOS_SIGN_CERT_P12 secret, Zano.app gets an ad-hoc signature"
+            echo "::notice title=Code signing::SKIPPED -no MACOS_SIGN_CERT_P12 secret, Zano.app gets an ad-hoc signature"
           fi
 
       - name: Sign Zano.app (Developer ID)
@@ -433,10 +423,9 @@ jobs:
           path: build/src/zano-macos-x64-gui*.dmg
           if-no-files-found: error
 
-  # EXPERIMENTAL: native Apple Silicon GUI via Qt 6 (QtWebEngine 6 ships
-  # arm64/universal macOS binaries, unlike Qt 5.15). Qt 6.8 requires macOS 12+.
+  # Native Apple Silicon GUI (Qt 6.8, macOS 12+)
   build-gui-arm64:
-    name: GUI arm64 (Qt 6.8, experimental)${{ inputs.testnet == true && ' (testnet)' || '' }}
+    name: GUI arm64 (Qt 6.8)${{ inputs.testnet == true && ' (testnet)' || '' }}
     runs-on: macos-15
     timeout-minutes: 240
     env:
@@ -525,7 +514,7 @@ jobs:
       - name: Assemble Zano.app
         run: |
           cd build/src
-          # rename from the official script; no-op if already capitalized
+          # align the binary name with the bundle (no-op if already 'Zano')
           mv Zano.app/Contents/MacOS/zano Zano.app/Contents/MacOS/Zano || true
           cp zanod simplewallet Zano.app/Contents/MacOS/
           "$QT_ROOT_DIR/bin/macdeployqt" Zano.app
@@ -541,10 +530,10 @@ jobs:
         run: |
           if [ -n "$CERT" ]; then
             echo "sign=true" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Code signing::ENABLED — Zano.app will be signed with Developer ID"
+            echo "::notice title=Code signing::ENABLED -Zano.app will be signed with Developer ID"
           else
             echo "sign=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Code signing::SKIPPED — no MACOS_SIGN_CERT_P12 secret, Zano.app gets an ad-hoc signature"
+            echo "::notice title=Code signing::SKIPPED -no MACOS_SIGN_CERT_P12 secret, Zano.app gets an ad-hoc signature"
           fi
 
       - name: Sign Zano.app (Developer ID)

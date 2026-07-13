@@ -52,16 +52,6 @@ int main(int argc, char *argv[])
 
   TRY_ENTRY();
   epee::string_tools::set_module_name_and_folder(path_to_process_utf8);
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-  // high-DPI scaling is always on in Qt 6, these attributes are deprecated no-ops there
-  QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
-#ifdef _MSC_VER
-#if _MSC_VER >= 1910
-  QCoreApplication::setAttribute(Qt::AA_UseHighDpiPixmaps); //HiDPI pixmaps
-  //qputenv("QT_SCALE_FACTOR", "0.75");
-#endif
-#endif
-#endif
 
   log_space::get_set_log_detalisation_level(true, LOG_LEVEL_0);
   log_space::get_set_need_thread_id(true, true);

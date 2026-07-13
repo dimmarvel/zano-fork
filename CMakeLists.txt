@@ -297,13 +297,8 @@ endif()
 
 if(BUILD_GUI)
   cmake_minimum_required(VERSION 3.5) # <-- this is important for Linux GUI build, don't touch it -- sowle
-  # Qt 6 is picked when available (required for native macOS arm64 builds:
-  # QtWebEngine 5.15 has no arm64 binaries); Qt 5.15 remains fully supported.
-  find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets)
-  message(STATUS "Building GUI with Qt${QT_VERSION_MAJOR} (${QT_VERSION})")
-  find_package(Qt${QT_VERSION_MAJOR}Widgets REQUIRED)
-  find_package(Qt${QT_VERSION_MAJOR}WebEngineWidgets REQUIRED)
-  find_package(Qt${QT_VERSION_MAJOR}WebChannel REQUIRED)
+  find_package(Qt6 REQUIRED COMPONENTS Widgets WebEngineWidgets WebChannel)
+  message(STATUS "Building GUI with Qt ${Qt6_VERSION}")
 endif()
 
 set(COMMIT_ID_IN_VERSION ON CACHE BOOL "Include commit ID in version")
