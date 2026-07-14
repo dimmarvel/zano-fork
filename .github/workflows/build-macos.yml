@@ -16,7 +16,7 @@ env:
 
 jobs:
   build-cli:
-    name: CLI ${{ matrix.arch }}${{ inputs.testnet == true && ' (testnet)' || '' }}
+    name: macOS CLI ${{ matrix.arch }}${{ inputs.testnet == true && ' (testnet)' || '' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
     strategy:
@@ -177,7 +177,7 @@ jobs:
           if-no-files-found: error
 
   make-universal:
-    name: Universal binaries (lipo)
+    name: macOS Universal CLI (lipo)
     needs: build-cli
     runs-on: macos-15
     timeout-minutes: 15
@@ -260,7 +260,7 @@ jobs:
 
   # Release-style GUI build (Zano.app packed into a dmg)
   build-gui-x64:
-    name: GUI x64 (Qt 6.8)${{ inputs.testnet == true && ' (testnet)' || '' }}
+    name: macOS GUI x64 (Qt 6.8)${{ inputs.testnet == true && ' (testnet)' || '' }}
     runs-on: macos-15-intel
     timeout-minutes: 240
     env:
@@ -425,7 +425,7 @@ jobs:
 
   # Native Apple Silicon GUI (Qt 6.8, macOS 12+)
   build-gui-arm64:
-    name: GUI arm64 (Qt 6.8)${{ inputs.testnet == true && ' (testnet)' || '' }}
+    name: macOS GUI arm64 (Qt 6.8)${{ inputs.testnet == true && ' (testnet)' || '' }}
     runs-on: macos-15
     timeout-minutes: 240
     env:
