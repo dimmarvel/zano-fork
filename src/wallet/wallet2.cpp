@@ -1713,7 +1713,7 @@ void wallet2::process_new_blockchain_entry(const currency::block& b, const curre
 
   //optimization: seeking only for blocks that are not older then the wallet creation time plus 1 day. 1 day is for possible user incorrect time setup
   const std::vector<uint64_t>* pglobal_index = nullptr;
-  if (get_block_height(b) > get_wallet_minimum_height()) // b.timestamp + 60 * 60 * 24 > m_account.get_createtime())
+  if (get_block_height(b) > get_wallet_minimum_height()) // b.timestamp + 60 * 60 * 24 > m_account.get_createtime_precise())
   {
     pglobal_index = nullptr;
     if (bche.coinbase_ptr.get())
@@ -1741,7 +1741,7 @@ void wallet2::process_new_blockchain_entry(const currency::block& b, const curre
   }
   else
   {
-    WLT_LOG_L3("Skipped block by timestamp, height: " << height << ", block time " << b.timestamp << ", account time " << m_account.get_createtime());
+    WLT_LOG_L3("Skipped block by timestamp, height: " << height << ", block time " << b.timestamp << ", account time " << m_account.get_createtime_precise());
   }
   m_chain.push_new_block_id(bl_id, height); //m_blockchain.push_back(bl_id);
   m_last_bc_timestamp = b.timestamp;
@@ -1797,7 +1797,7 @@ uint64_t wallet2::get_wallet_minimum_height()
 
   currency::COMMAND_RPC_GET_EST_HEIGHT_FROM_DATE::request req = AUTO_VAL_INIT(req);
   currency::COMMAND_RPC_GET_EST_HEIGHT_FROM_DATE::response res = AUTO_VAL_INIT(res);
-  req.timestamp = m_account.get_createtime();
+  req.timestamp = m_account.get_createtime_rounded();
   bool r = m_core_proxy->call_COMMAND_RPC_GET_EST_HEIGHT_FROM_DATE(req, res);
   THROW_IF_FALSE_WALLET_EX(r, error::no_connection_to_daemon, "call_COMMAND_RPC_GET_EST_HEIGHT_FROM_DATE");
   WLT_THROW_IF_FALSE_WALLET_INT_ERR_EX(res.status == API_RETURN_CODE_OK, "FAILED TO CALL COMMAND_RPC_GET_EST_HEIGHT_FROM_DATE");
@@ -2122,7 +2122,7 @@ bool wallet2::has_related_alias_entry_unconfirmed(const currency::transaction& t
 //----------------------------------------------------------------------------------------------------
 bool wallet2::has_bare_unspent_outputs() const
 {
-  if (m_account.get_createtime() > ZANO_HARDFORK_04_TIMESTAMP_ACTUAL)
+  if (m_account.get_createtime_precise() > ZANO_HARDFORK_04_TIMESTAMP_ACTUAL)
     return false;
 
   [[maybe_unused]] uint64_t bal = 0;
@@ -5448,10 +5448,38 @@ bool wallet2::try_mint_pos()
 //------------------------------------------------------------------
 bool wallet2::try_mint_pos(const currency::account_public_address& miner_address)
 {
+  std::atomic<bool> stop(false);
+  return do_one_pos_mining_cycle(stop,
+    [this]() -> bool
+    {
+      size_t blocks_fetched;
+      refresh(blocks_fetched);
+      if (blocks_fetched)
+      {
+        WLT_LOG_L0("Detected new block, minting interrupted");
+        return false;
+      }
+      return true;
+    },
+    m_core_runtime_config,
+    miner_address);
+}
+//------------------------------------------------------------------
+bool wallet2::do_one_pos_mining_cycle(std::atomic<bool>& stop, std::function<bool()> idle_condition_cb, const currency::core_runtime_config& runtime_config)
+{
+  return do_one_pos_mining_cycle(stop, idle_condition_cb, runtime_config, m_account.get_public_address());
+}
+//------------------------------------------------------------------
+bool wallet2::do_one_pos_mining_cycle(std::atomic<bool>& stop, std::function<bool()> idle_condition_cb, const currency::core_runtime_config& runtime_config, const currency::account_public_address& miner_address)
+{
   TIME_MEASURE_START_MS(mining_duration_ms);
   mining_context ctx = AUTO_VAL_INIT(ctx);
   WLT_LOG_L2("Starting PoS mining iteration");
-  fill_mining_context(ctx);
+  if (!fill_mining_context(ctx))
+  {
+    WLT_LOG_L1("Cannot obtain PoS mining context, skipping iteration");
+    return true;
+  }
 
   if (!ctx.is_pos_allowed)
   {
@@ -5465,18 +5493,8 @@ bool wallet2::try_mint_pos(const currency::account_public_address& miner_address
     return true;
   }
 
-  std::atomic<bool> stop(false);
   m_pos_attempts_count++;
-  scan_pos(ctx, stop, [this]() {
-    size_t blocks_fetched;
-    refresh(blocks_fetched);
-    if (blocks_fetched)
-    {
-      WLT_LOG_L0("Detected new block, minting interrupted");
-      return false;
-    }
-    return true;
-    }, m_core_runtime_config);
+  scan_pos(ctx, stop, idle_condition_cb, runtime_config);
 
   bool res = true;
   if (ctx.status == API_RETURN_CODE_OK)

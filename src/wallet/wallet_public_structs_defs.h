@@ -920,8 +920,6 @@ namespace tools::wallet_public
       uint64_t mixin;
       std::string payment_id; // hex-encoded
       std::string comment; 
-      bool push_payer;
-      bool hide_receiver;
       bool service_entries_permanent;
       std::vector<currency::tx_service_attachment> service_entries;
       std::vector<uint64_t> out_ids_to_spend;
@@ -930,10 +928,8 @@ namespace tools::wallet_public
         KV_SERIALIZE(destinations)     DOC_DSCR("List of destinations") DOC_EXMP_AUTO(1)     DOC_END
         KV_SERIALIZE(fee)              DOC_DSCR("Fee to be paid on behalf of sender's wallet(paid in native coins)") DOC_EXMP_AUTO(10000000000)     DOC_END
         KV_SERIALIZE(mixin)            DOC_DSCR("Specifies number of mixins (decoys) that would be used to create input, actual for pre-Zarcanum outputs, for post-Zarcanum outputs instead of this option, number that is defined by network hard rules (15+)") DOC_EXMP(15)     DOC_END
-        KV_SERIALIZE(payment_id)       DOC_DSCR("[deprecated] Legacy tx-wide hex-encoded payment_id, that normally used for user database by exchanges") DOC_EXMP_AUTO("")     DOC_END
+        KV_SERIALIZE(payment_id)       DOC_HIDE
         KV_SERIALIZE(comment)          DOC_DSCR("Text comment that is displayed in UI") DOC_EXMP_AUTO("Thanks for the coffe")     DOC_END
-        KV_SERIALIZE(push_payer)       DOC_DSCR("[deprecated] Reveal information about sender of this transaction, basically add sender address to transaction in encrypted way, so only receiver can see who sent transaction") DOC_EXMP(false)     DOC_END
-        KV_SERIALIZE(hide_receiver)    DOC_DSCR("[deprecated] This add to transaction information about remote address(destination), might be needed when the wallet restored from seed phrase and fully resynched, if this option were true, then sender won't be able to see remote address for sent transactions anymore.") DOC_EXMP(true)     DOC_END
         KV_SERIALIZE(service_entries)  DOC_DSCR("Service entries that might be used by different apps that works on top of Zano network, not part of consensus") DOC_EXMP_AUTO(1)     DOC_END
         KV_SERIALIZE(service_entries_permanent) DOC_DSCR("Point to wallet that service_entries should be placed to 'extra' section of transaction(which won't be pruned after checkpoints)") DOC_EXMP_AUTO(1)     DOC_END
         KV_SERIALIZE(out_ids_to_spend) DOC_DSCR("[optional] List of output IDs that should only be used for this transfer. If empty or not present -- no restriction (default).") DOC_EXMP_AGGR({10, 15, 305}) DOC_END
@@ -998,6 +994,18 @@ namespace tools::wallet_public
     };
   };
 
+  struct payment_subtransfer
+  {
+    crypto::public_key  asset_id = currency::null_pkey;
+    uint64_t            amount   = 0;
+
+    BEGIN_KV_SERIALIZE_MAP()
+      KV_SERIALIZE_POD_AS_HEX_STRING(asset_id)  DOC_DSCR("Asset ID of the corresponding subtransfer.") DOC_EXMP("f74bb56a5b4fa562e679ccaadd697463498a66de4f1760b2cd40f11c3a00a7a8") DOC_END
+      KV_SERIALIZE(amount)                      DOC_DSCR("Amount of the asset transferred.") DOC_EXMP(8000) DOC_END
+    END_KV_SERIALIZE_MAP()
+  };
+  
+  
   struct payment_details
   {
     std::string payment_id;       // hex-encoded
@@ -1005,13 +1013,15 @@ namespace tools::wallet_public
     uint64_t amount;
     uint64_t block_height;
     uint64_t unlock_time;
+    std::vector<payment_subtransfer> payment_subtransfers;
 
     BEGIN_KV_SERIALIZE_MAP()
       KV_SERIALIZE(payment_id)     DOC_DSCR("Hex-encoded payment ID that related to this payment") DOC_EXMP("1dfe5a88ff9effb3")     DOC_END
       KV_SERIALIZE(tx_hash)        DOC_DSCR("Transaction ID that is holding this payment") DOC_EXMP("01220e8304d46b940a86e383d55ca5887b34f158a7365bbcdd17c5a305814a93")     DOC_END
-      KV_SERIALIZE(amount)         DOC_DSCR("Amount of native coins transfered") DOC_EXMP(100000000000)     DOC_END
+      KV_SERIALIZE(amount)         DOC_DSCR("Amount of native coins transfered (native coins are always accounted in this field)") DOC_EXMP(100000000000)     DOC_END
       KV_SERIALIZE(block_height)   DOC_DSCR("Block height that holds transaction") DOC_EXMP(12321)     DOC_END
       KV_SERIALIZE(unlock_time)    DOC_DSCR("Timestamp/blocknumber after which this money would become availabe, recommended don't count transfers that has this field not 0") DOC_EXMP(0)     DOC_END
+      KV_SERIALIZE(payment_subtransfers) DOC_DSCR("List of subtransfers that this payment has (only for assets being transferred)") DOC_EXMP_AUTO(1)     DOC_END
     END_KV_SERIALIZE_MAP()
   };
 

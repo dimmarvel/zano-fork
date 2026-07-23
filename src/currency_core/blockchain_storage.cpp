@@ -5385,13 +5385,13 @@ bool blockchain_storage::change_gateway_balance(const crypto::hash& tx_id, const
 
   if (increase)
   {
-    CHECK_AND_ASSERT_MES(balance_entry.amount <= std::numeric_limits<uint64_t>::max() - amount, false, "Uint64 overflow, gateway address " << gw_addr_str << ", tx: " << tx_id << ", asset_id: " << asset_id);
+    CHECK_AND_ASSERT_MES(balance_entry.amount <= std::numeric_limits<uint64_t>::max() - amount, false, "Uint64 overflow, gateway address " << gw_addr_str << ", tx: " << tx_id << ", asset_id: " << asset_id << ", balance: " << balance_entry.amount << ", amount: " << amount);
     balance_entry.amount += amount;
   }
   else
   {
     // decrease
-    CHECK_AND_ASSERT_MES(balance_entry.amount >= amount, false, "Balance underflow, gateway address " << gw_addr_str << ", tx: " << tx_id << ", asset_id: " << asset_id);
+    CHECK_AND_ASSERT_MES(balance_entry.amount >= amount, false, "Balance underflow, gateway address " << gw_addr_str << ", tx: " << tx_id << ", asset_id: " << asset_id << ", balance: " << balance_entry.amount << ", amount: " << amount);
     balance_entry.amount -= amount;
   }
 
@@ -5545,21 +5545,34 @@ bool blockchain_storage::gateway_get_address_history(const currency::gateway_add
 
   std::vector<crypto::hash> tx_ids;
   m_db_gateway_transactions.get_subitems(addr_id, req.offset, count, tx_ids);
-  crypto::secret_key decrypt_key = {};
-  if (req.gateway_view_secret_key)
-    decrypt_key = *req.gateway_view_secret_key;
-
+  // the view secret key is OPTIONAL, if provided, decrypt server-side, if omitted, the  daemon does NOT decrypt
+  const bool has_key = req.gateway_view_secret_key.has_value() && !(*req.gateway_view_secret_key == currency::null_skey);
 
   for (const auto& tx_id : tx_ids)
   {
     tools::wallet_public::wallet_transfer_info wti = {};
     auto tx_ptr = m_db_transactions.get(tx_id);
     CHECK_AND_ASSERT_MES(tx_ptr, false, "gateway_get_address_history: internal error, tx id " << tx_id << " not found in m_db_transactions");
-    bool r = gateway_prepare_wti(addr_id, tx_id, decrypt_key, wti, *tx_ptr);
-    if(r)
+
+    if (has_key)
+    {
+      bool r = gateway_prepare_wti(addr_id, tx_id, *req.gateway_view_secret_key, wti, *tx_ptr);
+    if (r)
       res.transactions.push_back(wti);
+    }
+    else
+    {
+      bool decrypt_as_income = false;
+      bool found = false;
+      bool r = gateway_prepare_wti_public(addr_id, tx_id, wti, *tx_ptr, decrypt_as_income, found);
+      if (r)
+      {
+        res.raw_txs.push_back(epee::string_tools::buff_to_hex_nodelimer(t_serializable_object_to_blob(wti.tx)));
+        res.transactions.push_back(wti);
+      }
+    }
   }
-  
+
   return true;
 }
 
@@ -6490,7 +6503,7 @@ bool blockchain_storage::check_tx_input(const transaction& tx, size_t in_index, 
 
   CHECK_AND_ASSERT_MES(scan_contex.zc_outs.size() == zc_in.key_offsets.size(), false, "incorrect number of referenced outputs found: " << scan_contex.zc_outs.size() << ", while " << zc_in.key_offsets.size() << " is expected.");
   CHECK_AND_ASSERT_MES(in_index < tx.signatures.size(), false, "tx.signatures.size (" << tx.signatures.size() << ") is less than or equal to in_index (" << in_index << ")");
-  // TODO: consider additional checks here
+  CHECK_AND_ASSERT_MES(tx.signatures[in_index].type() == typeid(ZC_sig), false, "unexpected tx.signatures[" << in_index << "].type() != typeid(ZC_sig): " << tx.signatures[in_index].type().name());
 
   // build a ring of references
   vector<crypto::CLSAG_GGX_input_ref_t> ring;
@@ -6599,14 +6612,15 @@ std::vector<uint64_t> blockchain_storage::get_last_n_blocks_timestamps(size_t n)
 uint64_t blockchain_storage::get_last_n_blocks_timestamps_median(size_t n) const
 {
   CRITICAL_REGION_LOCAL(m_read_lock);
-  auto it = m_timestamps_median_cache.find(n);
-  if (it != m_timestamps_median_cache.end())
-    return it->second;
+
+  uint64_t cached_median = 0;
+  if (m_timestamps_median_cache.visit(n, [&cached_median](const auto& kv){ cached_median = kv.second; }))
+    return cached_median;
 
   std::vector<uint64_t> timestamps = get_last_n_blocks_timestamps(n);
   uint64_t median_res = epee::misc_utils::median(timestamps);
   if (timestamps.size() == n)
-    m_timestamps_median_cache[n] = median_res;
+    m_timestamps_median_cache.emplace(n, median_res);
   return median_res;
 }
 //------------------------------------------------------------------
@@ -8343,7 +8357,7 @@ bool blockchain_storage::prevalidate_block(const block& bl)
   if (bl.minor_version > CURRENT_BLOCK_MINOR_VERSION)
   {
     //this means that binary block is compatible, but semantics got changed due to hardfork, daemon should be updated
-    LOG_PRINT_MAGENTA("Block's MINOR_VERSION is: " << bl.minor_version 
+    LOG_PRINT_MAGENTA("Block's MINOR_VERSION is: " << (int)bl.minor_version 
       << ", while current build supports not bigger then " <<  CURRENT_BLOCK_MINOR_VERSION 
       << ", please make sure you using latest version.", LOG_LEVEL_0
     );
@@ -9371,7 +9385,8 @@ bool blockchain_storage::validate_alt_block_txs(const block& b, const crypto::ha
     }
     const transaction& tx = it == abei.onboard_transactions.end() ? *tx_ptr : it->second;
 
-    CHECK_AND_ASSERT_MES(tx.signatures.size() == tx.vin.size(), false, "invalid tx: signatures.size() == " <<  tx.signatures.size() << ", tx.vin.size() == " << tx.vin.size());
+    CHECK_AND_ASSERT_MES(tx.signatures.size() == tx.vin.size(), false, "invalid alt block tx " << tx_id << ": signatures.size() == " <<  tx.signatures.size() << ", tx.vin.size() == " << tx.vin.size());
+    CHECK_AND_ASSERT_MES(validate_tx_semantic(tx, get_object_blobsize(tx), tx_id), false, "invalid alt block tx " << tx_id << ": semantic validation failed");
 
     fees.push_back(get_tx_fee(tx));
 

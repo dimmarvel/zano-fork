@@ -25,7 +25,6 @@
 #define CURRENCY_TX_MIN_ALLOWED_OUTS                    2             // effective starting HF4 Zarcanum
 #define CURRENCY_TX_PRACTICAL_MAX_INPUTS                80            // limited by current tx size limit and typical input size; used in wallet to limit number of inputs in a single tx
 
-
 #define CURRENCY_PUBLIC_ADDRESS_BASE58_PREFIX           0xc5          // addresses start with 'Zx'
 #define CURRENCY_PUBLIC_INTEG_ADDRESS_BASE58_PREFIX     0x3678        // integrated addresses start with 'iZ'
 #define CURRENCY_PUBLIC_INTEG_ADDRESS_V2_BASE58_PREFIX  0x36f8        // integrated addresses start with 'iZ' (new format)

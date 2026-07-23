@@ -630,9 +630,9 @@ bool wallets_manager::init_local_daemon()
   m_pview->update_daemon_status(dsi);
   res = m_rpc_server.init(m_vm);
   CHECK_AND_ASSERT_AND_SET_GUI(res, "Failed to initialize core rpc server.");
-  LOG_PRINT_GREEN("Core rpc server initialized OK on port: " << m_rpc_server.get_binded_port(), LOG_LEVEL_0);
+  LOG_PRINT_GREEN("Core rpc server initialized OK on port: " << m_rpc_server.get_bound_port(), LOG_LEVEL_0);
 
-  m_ui_opt.rpc_port = m_rpc_server.get_binded_port();
+  m_ui_opt.rpc_port = m_rpc_server.get_bound_port();
 
 
   //chain calls to rpc server
@@ -1145,12 +1145,13 @@ std::string wallets_manager::open_wallet(const std::wstring& path, const std::st
   {
 #ifndef MOBILE_WALLET_BUILD
     w->set_core_proxy(std::shared_ptr<tools::i_core_proxy>(new tools::core_fast_rpc_proxy(m_rpc_server)));
-    if(m_socks5_cfg.transactions || m_socks5_cfg.blocks)
-      w->configure_socks_relay(m_socks5_cfg);
-#else 
+#else
     LOG_ERROR("Unexpected location reached");
 #endif
   }
+
+  if(m_socks5_cfg.transactions || m_socks5_cfg.blocks)
+    w->configure_socks_relay(m_socks5_cfg);
 
   w->set_votes_config_path(m_data_dir + "/" + CURRENCY_VOTING_CONFIG_DEFAULT_FILENAME);
 
@@ -1705,6 +1706,12 @@ std::string wallets_manager::transfer(uint64_t wallet_id, const view::transfer_p
     api_return_code_result
     );
   
+  if (api_return_code_result == API_RETURN_CODE_OK && !tr_res.tx_details.has_value())
+    return API_RETURN_CODE_INTERNAL_ERROR + std::string(" tx_details is absent, while return code is OK");
+
+  if (tr_res.tx_details.has_value())
+      res_tx = tr_res.tx_details->tx;
+
   return api_return_code_result;
 }
 
@@ -2001,6 +2008,8 @@ void wallets_manager::prepare_wallet_status_info(wallet_vs_options& wo, view::wa
   wsi.is_alias_operations_available = !wo.has_related_alias_in_unconfirmed;
   wo.w->get()->balance(wsi.balances, wsi.minied_total);
   wsi.has_bare_unspent_outputs = wo.w->get()->has_bare_unspent_outputs();
+  wsi.current_pos_attempts = wo.w->get()->get_current_pos_attempts();
+  wsi.est_iterations_per_pos_block = tools::estimate_iterations_per_pos_block(wsi.balances);
 }
 std::string wallets_manager::check_available_sources(uint64_t wallet_id, std::list<uint64_t>& amounts)
 {
@@ -2360,30 +2369,17 @@ void wallets_manager::wallet_vs_options::worker_func()
       //mining zone
       if (do_mining && *plast_daemon_network_state == currency::COMMAND_RPC_GET_INFO::daemon_network_state_online)
       {
-        pos_minin_interval.do_call([this](){
-          TIME_MEASURE_START_MS(mining_duration_ms);
-          tools::wallet2::mining_context ctx = AUTO_VAL_INIT(ctx);
-          LOG_PRINT_L1(get_log_prefix() + " Starting PoS mint iteration");
-          if (!w->get()->fill_mining_context(ctx))
-          {
-            LOG_PRINT_L1(get_log_prefix() + " cannot obtain PoS mining context, skip iteration");
-            return true;
-          }
+        pos_minin_interval.do_call([this, &wsi](){
+          w->get()->do_one_pos_mining_cycle(break_mining_loop,
+            [this]() -> bool
+            {
+              return *plast_daemon_network_state == currency::COMMAND_RPC_GET_INFO::daemon_network_state_online &&  *plast_daemon_height == last_wallet_synch_height;
+            },
+            core_conf);
 
-          //uint64_t pos_entries_amount = 0;
-          //for (auto& ent : ctx.sp.pos_entries)
-          //  pos_entries_amount += ent.amount;
+          prepare_wallet_status_info(*this, wsi);
+          pview->update_wallet_status(wsi);
 
-          w->get()->scan_pos(ctx, break_mining_loop, [this](){
-            return *plast_daemon_network_state == currency::COMMAND_RPC_GET_INFO::daemon_network_state_online &&  *plast_daemon_height == last_wallet_synch_height;
-          }, core_conf);
-
-          if (ctx.status == API_RETURN_CODE_OK)
-          {
-            w->get()->build_minted_block(ctx);
-          }
-          TIME_MEASURE_FINISH_MS(mining_duration_ms);
-          LOG_PRINT_L1(get_log_prefix() << " PoS GUI mining: " << ctx.iterations_processed << " iterations finished (" << std::fixed << std::setprecision(2) << (mining_duration_ms / 1000.0f) << "s), status: " << ctx.status << ", " << ctx.total_items_checked << " entries with total amount: " << currency::print_money_brief(ctx.total_amount_checked));
           return true;
         });
       }
