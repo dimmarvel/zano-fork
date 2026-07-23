@@ -336,6 +336,12 @@ namespace currency
     CHECK_CORE_READY();
     CHECK_RPC_LIMITS(req.block_ids.size(), RPC_LIMIT_COMMAND_RPC_GET_BLOCKS_DIRECT_BLOCK_IDS);
 
+    if (req.block_ids.empty())
+    {
+      res.status = API_RETURN_CODE_GENESIS_MISMATCH;
+      return true;
+    }
+
     if (req.block_ids.back() != m_core.get_blockchain_storage().get_block_id_by_height(0))
     {
       //genesis mismatch, return specific
@@ -375,6 +381,13 @@ namespace currency
     CHECK_CORE_READY();
     CHECK_RPC_LIMITS(req.block_ids.size(), RPC_LIMIT_COMMAND_RPC_GET_BLOCKS_DIRECT_BLOCK_IDS);
     LOG_PRINT_L2("[on_get_blocks]: Prevalidating....");
+
+    if (req.block_ids.empty())
+    {
+      res.status = API_RETURN_CODE_GENESIS_MISMATCH;
+      return true;
+    }
+
     if (req.block_ids.back() != m_core.get_blockchain_storage().get_block_id_by_height(0))
     {
       //genesis mismatch, return specific
@@ -1224,13 +1237,6 @@ namespace currency
   {
     CHECK_RPC_LIMITS(req.count, RPC_LIMIT_COMMAND_RPC_GATEWAY_GET_ADDRESS_HISTORY);
 
-    if (req.gateway_view_secret_key == currency::null_skey)
-    {
-      res.status = API_RETURN_CODE_BAD_ARG;
-      res.status_error = "gateway_view_secret_key is required, must be a non-null secret";
-      return true;
-    }
-
     currency::gateway_address_id_type addr_id = {};
     address_v v_addr = {};
     payment_id_t dummy_payment_id = {};
@@ -1552,16 +1558,14 @@ namespace currency
       // try to decode each output with each given address, and if it is decoded successfully - add to the result.
       // outputs_addresses count can be less than vout size, and order doesn't matter
 
-      std::unordered_set<std::string> seen_addresses;
-      for(const auto& addr : req.outputs_addresses)
-      {
-        LOCAL_CHECK(seen_addresses.insert(addr).second, "duplicate address in outputs_addresses: " + addr);
-      }
-
       res.decoded_outputs.reserve(tx.vout.size());
 
+      std::unordered_set<std::string> seen_addresses;
       for(size_t i = 0; i < req.outputs_addresses.size(); ++i)
       {
+        if (!seen_addresses.insert(req.outputs_addresses[i]).second)
+          continue; // skip duplicate
+
         address_v addr_v{};
         payment_id_t payment_id{};
         LOCAL_CHECK(currency::get_account_address_and_payment_id_from_str(addr_v, payment_id, req.outputs_addresses[i]) && payment_id.empty(), "output address #" + epee::string_tools::num_to_string_fast(i) + " couldn't be parsed or it is an integrated address (which is not supported)");
@@ -1573,12 +1577,13 @@ namespace currency
         for(size_t out_idx = 0; out_idx < tx.vout.size(); ++out_idx)
         {
           const tx_out_v& out_v = tx.vout[out_idx];
+          const size_t decoded_outputs_size_before = res.decoded_outputs.size();
           bool unknown_output_type = false;
           bool decoded_using_this_out = decode_output(addr_v, out_v, i, out_idx, derivation, unknown_output_type);
           LOCAL_CHECK_INT_ERR(!unknown_output_type, (std::string("unknown output type: ") + out_v.type().name()));
           if (!decoded_using_this_out)
           {
-            res.decoded_outputs.pop_back();
+            res.decoded_outputs.resize(decoded_outputs_size_before); // cant use pop_back cuz decode_output might not emplace_back element
             continue; // this output is not decoded with the given address, try next one
           }
           decoded = true;
@@ -1852,6 +1857,7 @@ namespace currency
     {
       error_resp.code = CORE_RPC_ERROR_CODE_TOO_BIG_HEIGHT;
       error_resp.message = std::string("To big height: ") + std::to_string(h) + ", current blockchain size = " +  std::to_string(m_core.get_current_blockchain_size());
+      return false;
     }
     res = string_tools::pod_to_hex(m_core.get_block_id_by_height(h));
     return true;

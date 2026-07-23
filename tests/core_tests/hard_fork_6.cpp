@@ -1932,3 +1932,272 @@ bool hard_fork_6_coinbase_size_rules::c1(currency::core& c, size_t ev_index, con
   return true;
 }
 
+//------------------------------------------------------------------------------
+
+bool hard_fork_6_gw_incompatible_with_mode_separate::generate(std::vector<test_event_entry>& events) const
+{
+  // Test idea: make sure gateway ins/outs are rejected in TX_FLAG_SIGNATURE_MODE_SEPARATE txs (HF6+).
+
+  bool r = false;
+  uint64_t ts = test_core_time::get_time();
+  m_accounts.resize(TOTAL_ACCS_COUNT);
+  account_base& miner_acc = m_accounts[MINER_ACC_IDX]; miner_acc.generate(); miner_acc.set_createtime(ts);
+
+  MAKE_GENESIS_BLOCK(events, blk_0, miner_acc, ts);
+  DO_CALLBACK(events, "configure_core");
+  REWIND_BLOCKS_N(events, blk_0r, blk_0, miner_acc, CURRENCY_MINED_MONEY_UNLOCK_WINDOW + 1);
+
+  // register a gateway address (gw outputs require it)
+  keypair gw_view  = keypair::generate();
+  keypair gw_spend = keypair::generate();
+  gateway_address_descriptor_operation gwdo{};
+  gateway_address_descriptor_operation_register gwdo_reg{};
+  gwdo_reg.view_pub_key = gw_view.pub;
+  gwdo_reg.descriptor.meta_info = "it's giving unencrypted balance vibes";
+  gwdo_reg.descriptor.owner_key = gw_spend.pub;
+  gwdo.operation = gwdo_reg;
+  MAKE_TX_EXTRA_ATTACH_FEE(events, tx_reg, miner_acc, miner_acc, 0, CURRENCY_GATEWAY_ADDRESS_REGISTRATION_FEE, blk_0r, std::vector<extra_v>({ gwdo }), empty_attachment);
+  MAKE_NEXT_BLOCK_TX1(events, blk_1, blk_0r, miner_acc, tx_reg);
+  REWIND_BLOCKS_N(events, blk_1r, blk_1, miner_acc, CURRENCY_MINED_MONEY_UNLOCK_WINDOW);
+
+  // both txs below send the same gateway output (miner -> gw addr); the only difference is the separate-mode flag
+
+  // 1/2, error: gateway output in a complete separate-mode (consolidated) tx must be rejected
+  std::vector<tx_source_entry> sources;
+  r = fill_tx_sources(sources, events, blk_1r, miner_acc.get_keys(), MK_TEST_COINS(13) + TESTS_DEFAULT_FEE, 10);
+  CHECK_AND_ASSERT_MES(r, false, "fill_tx_sources failed");
+  uint64_t change = get_sources_total_amount(sources) - MK_TEST_COINS(13) - TESTS_DEFAULT_FEE;
+  sources.back().separately_signed_tx_complete = true; // requires TX_FLAG_SIGNATURE_MODE_SEPARATE
+
+  std::vector<tx_destination_entry> destinations;
+  destinations.emplace_back(MK_TEST_COINS(13), gw_view.pub); // gateway output
+  if (change != 0)
+    destinations.push_back(tx_destination_entry(change, miner_acc.get_public_address()));
+
+  size_t tx_hardfork_id{};
+  uint64_t tx_version = get_tx_version_and_harfork_id_from_events(events, tx_hardfork_id);
+  crypto::secret_key one_time{};
+  tx_generation_context gen_context{};
+  transaction tx{};
+  r = construct_tx(miner_acc.get_keys(), sources, destinations, empty_extra, empty_attachment, tx, tx_version, tx_hardfork_id, one_time,
+    0, 0, 0, true, TX_FLAG_SIGNATURE_MODE_SEPARATE, TESTS_DEFAULT_FEE, gen_context);
+  CHECK_AND_ASSERT_MES(r, false, "construct_tx failed");
+
+  DO_CALLBACK(events, "mark_invalid_tx");
+  ADD_CUSTOM_EVENT(events, tx);
+
+  // 2/2, control: the exact same flow without TX_FLAG_SIGNATURE_MODE_SEPARATE is accepted
+  sources.clear();
+  r = fill_tx_sources(sources, events, blk_1r, miner_acc.get_keys(), MK_TEST_COINS(13) + TESTS_DEFAULT_FEE, 10);
+  CHECK_AND_ASSERT_MES(r, false, "fill_tx_sources failed");
+  change = get_sources_total_amount(sources) - MK_TEST_COINS(13) - TESTS_DEFAULT_FEE;
+
+  destinations.clear();
+  destinations.emplace_back(MK_TEST_COINS(13), gw_view.pub); // gateway output
+  if (change != 0)
+    destinations.push_back(tx_destination_entry(change, miner_acc.get_public_address()));
+
+  gen_context = {};
+  tx = {};
+  r = construct_tx(miner_acc.get_keys(), sources, destinations, empty_extra, empty_attachment, tx, tx_version, tx_hardfork_id, one_time,
+    0, 0, 0, true, 0 /* no TX_FLAG_SIGNATURE_MODE_SEPARATE */, TESTS_DEFAULT_FEE, gen_context);
+  CHECK_AND_ASSERT_MES(r, false, "construct_tx failed");
+
+  ADD_CUSTOM_EVENT(events, tx);
+  MAKE_NEXT_BLOCK_TX1(events, blk_2, blk_1r, miner_acc, tx);
+  DO_CALLBACK_PARAMS_STR(events, "check_gw_balance", t_serializable_object_to_blob(gw_address_balance_check_param{ gw_view.pub, MK_TEST_COINS(13) }));
+
+  return true;
+}
+
+//------------------------------------------------------------------------------
+
+hard_fork_6_asset_descriptor_limits::hard_fork_6_asset_descriptor_limits()
+{
+}
+
+bool hard_fork_6_asset_descriptor_limits::generate(std::vector<test_event_entry>& events) const
+{
+  // Test idea: check size/format limits for asset's meta_info, ticker, and full_name:
+  // <  HF6 : wallet / rpc level
+  // >= HF6 : consensus level
+
+  const size_t ASSET_META_MAX = 4000; // mirrors ASSET_META_INFO_MAX_SIZE (currency_format_utils.cpp)
+  const size_t ASSET_NAME_MAX = 400;
+
+  bool r = false;
+  uint64_t ts = test_core_time::get_time();
+  m_accounts.resize(TOTAL_ACCS_COUNT);
+  account_base& miner_acc = m_accounts[MINER_ACC_IDX]; miner_acc.generate(); miner_acc.set_createtime(ts);
+  account_base& alice_acc = m_accounts[ALICE_ACC_IDX]; alice_acc.generate(); alice_acc.set_createtime(ts);
+
+  size_t latest_hardfork = ZANO_HARDFORKS_TOTAL - 1; // test up to the latest hardfork
+
+  m_hardforks.clear();
+  m_hardforks.set_hardfork_height(ZANO_HARDFORK_04_ZARCANUM, 1);
+  m_hardforks.set_hardfork_height(ZANO_HARDFORK_05, 1);
+  m_hardforks.set_hardfork_height(latest_hardfork,  26);
+
+  MAKE_GENESIS_BLOCK(events, blk_0, miner_acc, ts);
+  DO_CALLBACK(events, "configure_core");
+
+  test_gentime_settings tgts = generator.get_test_gentime_settings(); // HF4+ requires a minimum of 2 outputs
+  tgts.split_strategy = tests_random_split_strategy;
+  generator.set_test_gentime_settings(tgts);
+
+  REWIND_BLOCKS_N_WITH_TIME(events, blk_0r, blk_0, miner_acc, CURRENCY_MINED_MONEY_UNLOCK_WINDOW);
+
+  // fund Alice with a few ZC UTXOs
+  transaction tx_a0{};
+  CHECK_AND_ASSERT_SUCCESS(construct_tx_with_many_outputs(m_hardforks, events, blk_0r, miner_acc.get_keys(), alice_acc.get_public_address(), MK_TEST_COINS(1000), 10, TESTS_DEFAULT_FEE, tx_a0));
+  ADD_CUSTOM_EVENT(events, tx_a0);
+  MAKE_NEXT_BLOCK_TX1(events, blk_1, blk_0r, miner_acc, tx_a0);
+  REWIND_BLOCKS_N_WITH_TIME(events, blk_1r, blk_1, miner_acc, CURRENCY_MINED_MONEY_UNLOCK_WINDOW);
+
+  // here: HF5 active, HF6 not yet
+  DO_CALLBACK_PARAMS(events, "check_hardfork_active",   static_cast<size_t>(ZANO_HARDFORK_05));
+  DO_CALLBACK_PARAMS(events, "check_hardfork_inactive", static_cast<size_t>(ZANO_HARDFORK_06));
+
+  const std::string good_ticker = "BERYLLIM8DECAY";
+  const std::string good_name(ASSET_NAME_MAX, 'b');
+  const std::string good_meta(ASSET_META_MAX, 'g');
+  const std::string big_meta(ASSET_META_MAX + 1, 'n');  // 4001 > ASSET_META_INFO_MAX_SIZE (4000)
+  const std::string bad_ticker  = "BERYLLIM8STABLE";    // 15 > 14 chars (ASSET_TICKER_REGEXP)
+  const std::string long_name(ASSET_NAME_MAX + 1, 'n'); // 401 > 400 chars (ASSET_FULL_NAME_REGEXP)
+
+  auto make_reg_tx = [&](const currency::block& head, const std::string& ticker, const std::string& full_name,
+                         const std::string& meta_info, uint32_t salt, currency::asset_descriptor_base* p_adb, crypto::public_key* p_asset_id, currency::transaction& out_tx) -> bool
+  {
+    // build a REGISTER tx for a descriptor with the given (possibly invalid) fields; asset_id/proofs are derived
+    // from them, so the tx is well-formed except for whatever the consensus limit would flag
+    size_t hf_id = m_hardforks.get_the_most_recent_hardfork_id_for_height(get_block_height(head));
+    currency::asset_descriptor_base adb;
+    adb.total_max_supply = 1000;
+    adb.decimal_point    = 0;
+    adb.ticker           = ticker;
+    adb.full_name        = full_name;
+    adb.meta_info        = meta_info;
+    currency::asset_descriptor_operation ado{};
+    fill_ado_version_based_onhardfork(ado, hf_id);
+    ado.opt_descriptor = adb;
+    fill_adb_version_based_onhardfork(*ado.opt_descriptor, hf_id);
+    ado.operation_type = ASSET_DESCRIPTOR_OPERATION_REGISTER;
+    if (hf_id >= ZANO_HARDFORK_05)
+      ado.opt_asset_id_salt = salt;
+    // ado is complete
+    std::vector<currency::tx_destination_entry> dsts;
+    dsts.emplace_back(1, alice_acc.get_public_address(), null_pkey);
+    dsts.emplace_back(1, alice_acc.get_public_address(), null_pkey);
+
+    if (!construct_tx_to_key(m_hardforks, events, out_tx, head, alice_acc, dsts, TESTS_DEFAULT_FEE, 0, 0, std::vector<currency::attachment_v>({ ado })))
+      return false;
+
+    if (p_asset_id || p_adb)
+    {
+      // store asset id into p_asset_id upon request
+      // (owner and current_supply fields are filled on tx creation, and we need the full adb to calculate the correct asset_id)
+      const asset_descriptor_operation& ado_actual = get_type_in_variant_container_by_ref<asset_descriptor_operation>(out_tx.extra);
+      if (!ado_actual.opt_descriptor.has_value())
+        return false;
+      if (p_asset_id && !get_or_calculate_asset_id(ado_actual, nullptr, p_asset_id))
+        return false;
+      if (p_adb)
+        *p_adb = ado_actual.opt_descriptor.get();
+    }
+
+    return true;
+  };
+
+  auto make_update_tx = [&](const currency::block& head, const currency::asset_descriptor_base& adb, const crypto::public_key& asset_id,
+                            const std::string& meta_info, currency::transaction& out_tx) -> bool
+  {
+    size_t hf_id = m_hardforks.get_the_most_recent_hardfork_id_for_height(get_block_height(head));
+    asset_descriptor_operation ado{};
+    fill_ado_version_based_onhardfork(ado, hf_id);
+    ado.opt_descriptor = adb;
+    ado.opt_descriptor->meta_info = meta_info;
+    ado.operation_type = ASSET_DESCRIPTOR_OPERATION_UPDATE;
+    ado.opt_asset_id = asset_id;
+    std::vector<tx_destination_entry> destinations;
+    destinations.emplace_back(TESTS_DEFAULT_FEE, alice_acc.get_public_address());
+    return construct_tx_to_key(m_hardforks, events, out_tx, head, alice_acc, destinations, TESTS_DEFAULT_FEE, 0, 0, std::vector<currency::attachment_v>({ ado }));
+  };
+
+  //
+  // before HF6: each bad descriptor is accepted at the pool (ADD_CUSTOM_EVENT) and in a block (MAKE_NEXT_BLOCK_TX1)
+  //
+  crypto::public_key asset_id{}; // store the first one (with big_meta) here for future update
+  asset_descriptor_base adb{};
+  transaction tx_pre_meta{};
+  CHECK_AND_ASSERT_MES(make_reg_tx(blk_1r, good_ticker, good_name, big_meta, 1, &adb, &asset_id, tx_pre_meta), false, "build pre-HF6 oversized-meta reg failed");
+  ADD_CUSTOM_EVENT(events, tx_pre_meta);
+  MAKE_NEXT_BLOCK_TX1(events, blk_2, blk_1r, miner_acc, tx_pre_meta);
+  LOG_PRINT_GREEN_L0("asset_id = " << asset_id);
+
+  transaction tx_pre_ticker{};
+  CHECK_AND_ASSERT_MES(make_reg_tx(blk_2, bad_ticker, good_name, good_meta, 2, nullptr, nullptr, tx_pre_ticker), false, "build pre-HF6 bad-ticker reg failed");
+  ADD_CUSTOM_EVENT(events, tx_pre_ticker);
+  MAKE_NEXT_BLOCK_TX1(events, blk_3, blk_2, miner_acc, tx_pre_ticker);
+
+  transaction tx_pre_name{};
+  CHECK_AND_ASSERT_MES(make_reg_tx(blk_3, good_ticker, long_name, good_meta, 3, nullptr, nullptr, tx_pre_name), false, "build pre-HF6 long-full_name reg failed");
+  ADD_CUSTOM_EVENT(events, tx_pre_name);
+  MAKE_NEXT_BLOCK_TX1(events, blk_4, blk_3, miner_acc, tx_pre_name);
+
+  transaction tx_pre_meta_update{};
+  CHECK_AND_ASSERT_MES(make_update_tx(blk_4, adb, asset_id, big_meta + "even bigger", tx_pre_meta_update), false, "build pre-HF6 oversized meta update failed");
+  ADD_CUSTOM_EVENT(events, tx_pre_meta_update);
+  MAKE_NEXT_BLOCK_TX1(events, blk_5, blk_4, miner_acc, tx_pre_meta_update);
+
+  // cross the HF5 -> latest_hardfork boundary
+  REWIND_BLOCKS_N_WITH_TIME(events, blk_5r, blk_5, miner_acc, 2);
+  LOG_PRINT_GREEN_L0("blk_5r is at " << get_block_height(blk_5r));
+  DO_CALLBACK_PARAMS(events, "check_hardfork_active", static_cast<size_t>(latest_hardfork));
+
+  //
+  // after HF6: build the same bad descriptors against the post-HF6 tip (blk_5r), then assert each is rejected at
+  // the pool (mark_invalid_tx) and in a block (mark_invalid_block)
+  //
+
+  transaction tx_post_meta{};
+  CHECK_AND_ASSERT_MES(make_reg_tx(blk_5r, good_ticker, good_name, big_meta, 11, nullptr, nullptr, tx_post_meta), false, "build post-HF6 oversized-meta reg failed");
+  DO_CALLBACK(events, "mark_invalid_tx");
+  ADD_CUSTOM_EVENT(events, tx_post_meta);
+  DO_CALLBACK(events, "mark_invalid_block");
+  MAKE_NEXT_BLOCK_TX1(events, blk_post_meta, blk_5r, miner_acc, tx_post_meta);
+
+  transaction tx_post_ticker{};
+  CHECK_AND_ASSERT_MES(make_reg_tx(blk_5r, bad_ticker, good_name, good_meta, 12, nullptr, nullptr, tx_post_ticker), false, "build post-HF6 bad-ticker reg failed");
+  DO_CALLBACK(events, "mark_invalid_tx");
+  ADD_CUSTOM_EVENT(events, tx_post_ticker);
+  DO_CALLBACK(events, "mark_invalid_block");
+  MAKE_NEXT_BLOCK_TX1(events, blk_post_ticker, blk_5r, miner_acc, tx_post_ticker);
+
+  transaction tx_post_name{};
+  CHECK_AND_ASSERT_MES(make_reg_tx(blk_5r, good_ticker, long_name, good_meta, 13, nullptr, nullptr, tx_post_name),  false, "build post-HF6 long-full_name reg failed");
+  DO_CALLBACK(events, "mark_invalid_tx");
+  ADD_CUSTOM_EVENT(events, tx_post_name);
+  DO_CALLBACK(events, "mark_invalid_block");
+  MAKE_NEXT_BLOCK_TX1(events, blk_post_name, blk_5r, miner_acc, tx_post_name);
+
+  transaction tx_post_meta_update{};
+  CHECK_AND_ASSERT_MES(make_update_tx(blk_5r, adb, asset_id, big_meta + "even bigger", tx_post_meta_update),  false, "build post-HF6 oversized meta update failed");
+  DO_CALLBACK(events, "mark_invalid_tx");
+  ADD_CUSTOM_EVENT(events, tx_post_meta_update);
+  DO_CALLBACK(events, "mark_invalid_block");
+  MAKE_NEXT_BLOCK_TX1(events, blk_post_meta_update, blk_5r, miner_acc, tx_post_meta_update);
+
+  // positive control: a valid descriptor is still accepted after HF6
+  transaction tx_post_good{};
+  CHECK_AND_ASSERT_MES(make_reg_tx(blk_5r, good_ticker, good_name, good_meta, 14, nullptr, nullptr, tx_post_good),  false, "build post-HF6 valid reg failed");
+  ADD_CUSTOM_EVENT(events, tx_post_good);
+  MAKE_NEXT_BLOCK_TX1(events, blk_6, blk_5r, miner_acc, tx_post_good);
+
+  // positive control: a valid update operation is accepted, even if meta_info was previously too large
+  transaction tx_post_good_meta_update{};
+  CHECK_AND_ASSERT_MES(make_update_tx(blk_6, adb, asset_id, good_meta, tx_post_good_meta_update),  false, "build post-HF6 valid update failed");
+  ADD_CUSTOM_EVENT(events, tx_post_good_meta_update);
+  MAKE_NEXT_BLOCK_TX1(events, blk_7, blk_6, miner_acc, tx_post_good_meta_update);
+
+  return true;
+}

@@ -121,7 +121,7 @@ namespace
 {
   const command_line::arg_descriptor<std::string>   arg_wallet_file  ("wallet-file", "Use wallet <arg>", "");
   const command_line::arg_descriptor<std::string>   arg_generate_new_wallet  ("generate-new-wallet", "Generate new wallet and save it to <arg> or <address>.wallet by default", "");
-  const command_line::arg_descriptor<bool>          arg_derive_custom_seed("derive_custom_seed", "Derive seed phrase from custom 24-words secret(advanced option, do it on your own risk)", "");
+  const command_line::arg_descriptor<bool>          arg_derive_custom_seed("derive-custom-seed", "Derive seed phrase from custom 24-words secret(advanced option, do it on your own risk)", "");
   const command_line::arg_descriptor<std::string>   arg_generate_new_auditable_wallet  ("generate-new-auditable-wallet", "Generate new auditable wallet and store it to <arg>", "");
   const command_line::arg_descriptor<std::string>   arg_daemon_address  ("daemon-address", "Use daemon instance at <host>:<port>", "");
   const command_line::arg_descriptor<std::string>   arg_daemon_host  ("daemon-host", "Use daemon instance at host <arg> instead of localhost", "");
@@ -177,9 +177,8 @@ namespace
   public:
     message_writer(epee::log_space::console_colors color = epee::log_space::console_color_default, bool bright = false,
       std::string&& prefix = std::string(), int log_level = LOG_LEVEL_2)
-      : m_flush(true)
+      : m_bright(bright)
       , m_color(color)
-      , m_bright(bright)
       , m_log_level(log_level)
     {
       m_oss << prefix;
@@ -195,7 +194,6 @@ namespace
 #endif
       , m_color(std::move(rhs.m_color))
       , m_log_level(std::move(rhs.m_log_level))
-      , m_bright(false)
     {
       rhs.m_flush = false;
     }
@@ -221,11 +219,18 @@ namespace
       {
         m_flush = false;
 
-        LOG_PRINT(m_oss.str(), m_log_level)
-        epee::log_space::set_console_color(m_color, m_bright);
-        std::cout << m_oss.str();
-        epee::log_space::reset_console_color();
-        std::cout << std::endl;
+        if (m_print_to_log)
+        {
+          LOG_PRINT(m_oss.str(), m_log_level)
+        }
+
+        if (m_print_to_stdout)
+        {
+          epee::log_space::set_console_color(m_color, m_bright);
+          std::cout << m_oss.str();
+          epee::log_space::reset_console_color();
+          std::cout << std::endl;
+        }
       }
 
       NESTED_CATCH_ENTRY(__func__);
@@ -236,11 +241,13 @@ namespace
     message_writer& operator=(message_writer& rhs);
     message_writer& operator=(message_writer&& rhs);
 
-  private:
-    bool m_flush;
+  protected:
+    bool m_flush = true;
+    bool m_bright = false;
+    bool m_print_to_log = true;
+    bool m_print_to_stdout = true;
     std::stringstream m_oss;
     epee::log_space::console_colors m_color;
-    bool m_bright;
     int m_log_level;
   };
 
@@ -253,7 +260,25 @@ namespace
   {
     return message_writer(epee::log_space::console_color_red, true, "Error: ", LOG_LEVEL_0);
   }
-}
+
+  class message_writer_no_log : public message_writer
+  {
+  public:
+    message_writer_no_log(epee::log_space::console_colors color = epee::log_space::console_color_default, bool bright = false,
+      std::string&& prefix = std::string())
+      : message_writer(color, bright, std::move(prefix), LOG_LEVEL_0)
+    {
+      m_print_to_log = false;
+      m_print_to_stdout = true;
+    }
+  };
+
+  message_writer_no_log success_msg_writer_no_log(bool color = false)
+  {
+    return message_writer_no_log(color ? epee::log_space::console_color_green : epee::log_space::console_color_default, false, std::string());
+  }
+
+} // namespace
 
 void display_vote_info(tools::wallet2& w)
 {
@@ -2359,7 +2384,7 @@ bool simple_wallet::check_all_tx_keys(const std::vector<std::string> &args_)
       crypto::secret_key tx_secret_key{};
       if (m_wallet->get_tx_key(wti.tx_hash, tx_secret_key))
       {
-        message_writer(epee::log_space::console_color_green, true, "", LOG_LEVEL_0) << "tx " << wti.tx_hash << " @ " << wti.height << " : " << tx_secret_key;
+        message_writer_no_log(epee::log_space::console_color_green, true, "") << "tx " << wti.tx_hash << " @ " << wti.height << " : " << tx_secret_key;
         ++txs_with_known_key;
       }
       else
@@ -2611,7 +2636,7 @@ bool simple_wallet::deploy_new_asset(const std::vector<std::string> &args)
     return true;
   }
 
-  if (!validate_asset_ticker_and_full_name(adb))
+  if (!validate_asset_ticker_full_name_and_meta_info(adb))
   {
     fail_msg_writer() << "ticker or full_name are invalid (perhaps they contain invalid symbols)";
     return true;
@@ -4049,7 +4074,11 @@ int main(int argc, char* argv[])
 
     tools::wallet_rpc_server wrpc(wallet_ptr);
     bool r = wrpc.init(vm);
-    CHECK_AND_ASSERT_MES(r, EXIT_FAILURE, "Failed to initialize wallet rpc server");
+    if (!r)
+    {
+      LOG_PRINT_L0("Wallet RPC server was not started");
+      return EXIT_FAILURE;
+    }
 
     tools::signal_handler::install([&wrpc/*, &wal*/ /* TODO(unassigned): use? */] {
       wrpc.send_stop_signal();

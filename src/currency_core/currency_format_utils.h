@@ -278,8 +278,11 @@ namespace currency
   const char* get_asset_operation_type_string(size_t asset_operation_type, bool short_name = false);
   bool validate_asset_ticker(const std::string& ticker);
   bool validate_asset_full_name(const std::string& full_name);
-  bool validate_asset_ticker_and_full_name(const asset_descriptor_base& adb);
+  bool validate_asset_meta_info(const std::string& meta_info_name);
+  bool validate_asset_ticker_full_name_and_meta_info(const asset_descriptor_base& adb);
   void replace_asset_ticker_and_full_name_if_invalid(asset_descriptor_base& adb, const crypto::public_key& asset_id);
+  bool validate_gateway_descriptor_base_limits(const gateway_address_descriptor_base& gadb);
+  bool validate_gateway_descriptor_operation_limits(const gateway_address_descriptor_operation& gado);
 
   //---------------------------------------------------------------
   bool construct_miner_tx(size_t height, size_t median_size, const boost::multiprecision::uint128_t& already_generated_coins, 
@@ -475,11 +478,14 @@ namespace currency
   std::string get_word_from_timestamp(uint64_t timestamp, bool use_password);
   uint64_t get_timestamp_from_word(std::string word, bool& password_used, const std::string& buff);
   uint64_t get_timestamp_from_word(std::string word, bool& password_used);
+  uint64_t round_timestamp_to_brain_date_quantum(uint64_t timestamp);
   bool parse_vote(const std::string& buff, std::list<std::pair<std::string, bool>>& votes);
   void prepare_wti_decrypted_attachments(tools::wallet_public::wallet_transfer_info& wti, const std::vector<currency::payload_items_v>& decrypted_att);
-  bool validate_ado_update_allowed(const asset_descriptor_base& a, const asset_descriptor_base& b);
-  bool validate_ado_initial(const asset_descriptor_base& a);
+  bool validate_ado_update_allowed(const asset_descriptor_base& a, const asset_descriptor_base& b, bool hf6_active = false);
+  bool validate_ado_initial(const asset_descriptor_base& a, bool hf6_active = false);
   bool gateway_prepare_wti(const currency::gateway_address_id_type& gw_id, const crypto::hash& tx_id, const crypto::secret_key& decrypt_key, tools::wallet_public::wallet_transfer_info& wti, const transaction_chain_entry& tx_chain_entry);
+  bool gateway_prepare_wti_public(const currency::gateway_address_id_type& gw_id, const crypto::hash& tx_id, tools::wallet_public::wallet_transfer_info& wti, const transaction_chain_entry& tx_chain_entry, bool& out_decrypt_as_income, bool& out_found);
+  bool gateway_decrypt_wti(const crypto::secret_key& view_secret_key, const currency::gateway_address_id_type& gw_id, tools::wallet_public::wallet_transfer_info& wti);
   void normalize_asset_operation_for_hashing(asset_descriptor_operation& op);
   crypto::hash get_signature_hash_for_asset_operation(const asset_descriptor_operation& ado);
 

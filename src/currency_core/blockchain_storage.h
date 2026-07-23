@@ -11,6 +11,7 @@
 #include <boost/program_options.hpp>
 
 #include <boost/interprocess/sync/named_mutex.hpp>
+#include <boost/unordered/concurrent_flat_map.hpp>
 
 #include <boost/serialization/serialization.hpp>
 #include <boost/serialization/version.hpp>
@@ -254,7 +255,9 @@ namespace currency
     //void get_all_known_block_ids(std::list<crypto::hash> &main, std::list<crypto::hash> &alt, std::list<crypto::hash> &invalid) const;
     bool is_pre_hardfork_tx_freeze_period_active() const;
     bool is_block_fit_for_strategy(uint64_t h, const std::string& strategy) const;
+    bool is_block_fit_for_strategy(const block& blk, const std::string& strategy) const;
     bool collect_all_outs_in_block(uint64_t input_amount, uint64_t height, std::vector<COMMAND_RPC_GET_RANDOM_OUTPUTS_FOR_AMOUNTS::out_entry>& outs) const;
+    bool collect_all_outs_in_block(uint64_t input_amount, const block_extended_info& bei, std::vector<COMMAND_RPC_GET_RANDOM_OUTPUTS_FOR_AMOUNTS::out_entry>& outs) const;
     size_t get_current_hardfork_id() const;
 
 
@@ -630,7 +633,7 @@ namespace currency
     mutable i_core_event_handler m_event_handler_stub;
 
     //tools::median_db_cache<uint64_t, uint64_t> m_tx_fee_median;
-    mutable std::unordered_map<size_t, uint64_t> m_timestamps_median_cache;
+    mutable boost::concurrent_flat_map<size_t, uint64_t> m_timestamps_median_cache;
     mutable performnce_data m_performance_data;
     std::list<core_event> m_core_events_pack;
     mutable epee::file_io_utils::native_filesystem_handle m_interprocess_locker_file;
@@ -702,6 +705,7 @@ namespace currency
     bool push_transaction_to_global_outs_index(const transaction& tx, const crypto::hash& tx_id, std::vector<uint64_t>& global_indexes, const crypto::hash& bl_id, const uint64_t bl_height);
     bool pop_transaction_from_global_index(const transaction& tx, const crypto::hash& tx_id);
     bool build_random_out_entry(uint64_t amount, size_t g_index, uint64_t mix_count, bool use_only_forced_to_mix, uint64_t height_upper_limit, COMMAND_RPC_GET_RANDOM_OUTPUTS_FOR_AMOUNTS::out_entry& oen) const;
+    bool build_random_out_entry_from_tx_entry(const transaction_chain_entry& tx_entry, uint64_t out_no, uint64_t amount, uint64_t g_index, uint64_t mix_count, bool use_only_forced_to_mix, uint64_t height_upper_limit, COMMAND_RPC_GET_RANDOM_OUTPUTS_FOR_AMOUNTS::out_entry& oen) const;
     bool add_out_to_get_random_outs(COMMAND_RPC_GET_RANDOM_OUTPUTS_FOR_AMOUNTS::outs_for_amount& result_outs, uint64_t amount, size_t i, uint64_t mix_count, bool use_only_forced_to_mix = false, uint64_t height_upper_limit = 0) const;
     bool get_target_outs_for_amount_prezarcanum(const COMMAND_RPC_GET_RANDOM_OUTPUTS_FOR_AMOUNTS3::request& req, const COMMAND_RPC_GET_RANDOM_OUTPUTS_FOR_AMOUNTS3::offsets_distribution& details, COMMAND_RPC_GET_RANDOM_OUTPUTS_FOR_AMOUNTS::outs_for_amount& result_outs, std::map<uint64_t, uint64_t>& amounts_to_up_index_limit_cache) const;
     bool get_target_outs_for_postzarcanum(const COMMAND_RPC_GET_RANDOM_OUTPUTS_FOR_AMOUNTS3::request& req, const COMMAND_RPC_GET_RANDOM_OUTPUTS_FOR_AMOUNTS3::offsets_distribution& details, COMMAND_RPC_GET_RANDOM_OUTPUTS_FOR_AMOUNTS::outs_for_amount& result_outs, std::map<uint64_t, uint64_t>& amounts_to_up_index_limit_cache) const;
