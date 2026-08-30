@@ -3003,3 +3003,97 @@ bool asset_operations_and_chain_switching::c3(currency::core& c, size_t ev_index
 
   return true;
 }
+
+crypto::public_key asset_ops_boost_chain_transition_core::pk_from_seed(uint8_t seed)
+{
+  crypto::public_key k{};
+  auto* p = reinterpret_cast<uint8_t*>(&k);
+  for (size_t i = 0; i < sizeof(k); ++i) p[i] = static_cast<uint8_t>(seed + i);
+  return k;
+}
+
+asset_ops_boost_chain_transition_core::asset_ops_boost_chain_transition_core()
+{
+  REGISTER_CALLBACK_METHOD(asset_ops_boost_chain_transition_core, c1);
+}
+
+bool asset_ops_boost_chain_transition_core::generate(std::vector<test_event_entry>& events) const
+{
+  uint64_t ts = test_core_time::get_time();
+  account_base miner; miner.generate(); miner.set_createtime(ts);
+  MAKE_GENESIS_BLOCK(events, blk_0, miner, ts);
+  DO_CALLBACK(events, "configure_core");
+  REWIND_BLOCKS_N_WITH_TIME(events, blk_0r, blk_0, miner, CURRENCY_MINED_MONEY_UNLOCK_WINDOW);
+
+  DO_CALLBACK(events, "c1");
+  return true;
+}
+
+// project already uses BOOST_CLASS_VERSION(2) and you can't just change it.
+// this structure is used so that assets can be serialized and deserialized with the desired boost version.
+template<int N>
+struct asset_descriptor_operation_archive_wrapper
+{
+  currency::asset_descriptor_operation data;
+  template <class Archive>
+  void serialize(Archive& ar, const unsigned int /*version*/)
+  {
+    ar & data;
+  }
+};
+
+// it is used to ensure that each of these types records the version = N field after certification
+BOOST_CLASS_VERSION(asset_descriptor_operation_archive_wrapper<0>, 0)
+BOOST_CLASS_VERSION(asset_descriptor_operation_archive_wrapper<1>, 1)
+
+bool asset_ops_boost_chain_transition_core::c1(currency::core& c, size_t ev_index, const std::vector<test_event_entry>& events)
+{
+  using currency::asset_descriptor_operation;
+
+  for (int ver : {0, 1})
+  {
+    asset_descriptor_operation original{};
+    original.version = ver;
+    original.operation_type = (ver == 1 ? ASSET_DESCRIPTOR_OPERATION_EMIT : ASSET_DESCRIPTOR_OPERATION_REGISTER);
+    original.opt_asset_id = pk_from_seed(ver ? 0x42 : 0x24);
+
+    std::stringstream ss;
+
+    // serialize
+    if (ver == 1)
+    {
+      asset_descriptor_operation_archive_wrapper<1> wrap{original};
+      boost::archive::binary_oarchive oa(ss);
+      oa << wrap;
+    }
+    else
+    {
+      asset_descriptor_operation_archive_wrapper<0> wrap{original};
+      boost::archive::binary_oarchive oa(ss);
+      oa << wrap;
+    }
+
+    // deserialize
+    asset_descriptor_operation restored{};
+    if (ver == 1)
+    {
+      asset_descriptor_operation_archive_wrapper<1> wrap{};
+      boost::archive::binary_iarchive ia(ss);
+      ia >> wrap;
+      restored = wrap.data;
+    }
+    else
+    {
+      asset_descriptor_operation_archive_wrapper<0> wrap{};
+      boost::archive::binary_iarchive ia(ss);
+      ia >> wrap;
+      restored = wrap.data;
+    }
+
+    CHECK_AND_ASSERT_MES(restored.version == original.version, false, "ver==" + std::to_string(ver) +  ": current version not set");
+    CHECK_AND_ASSERT_MES(restored.operation_type == original.operation_type, false, "ver==" + std::to_string(ver) + ": operation_type mismatch");
+    CHECK_AND_ASSERT_MES(restored.opt_asset_id.has_value(), true, "ver==" + std::to_string(ver) + ": opt_asset_id missing");
+  }
+
+  return true;
+}

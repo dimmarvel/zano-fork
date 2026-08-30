@@ -138,3 +138,12 @@ struct asset_operations_and_chain_switching : public wallet_test
 
   mutable crypto::public_key m_asset_ids[4];
 };
+
+struct asset_ops_boost_chain_transition_core : public wallet_test
+{
+  asset_ops_boost_chain_transition_core();
+  bool generate(std::vector<test_event_entry>& events) const;
+  bool c1(currency::core& c, size_t ev_index, const std::vector<test_event_entry>& events);
+
+  crypto::public_key pk_from_seed(uint8_t seed);
+};
